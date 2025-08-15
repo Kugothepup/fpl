@@ -1,0 +1,42 @@
+{
+  "points_prediction": {
+    "timestamp": "2025-08-15T13:54:29.192545",
+    "models_trained": [
+      "random_forest",
+      "gradient_boost",
+      "linear",
+      "ensemble"
+    ],
+    "best_model": "gradient_boost",
+    "best_score": 0.9999482855819893,
+    "feature_count": 34,
+    "training_samples": 548,
+    "test_samples": 137,
+    "model_results": {
+      "random_forest": {
+        "train_score": 0.9990508055530894,
+        "test_score": 0.9996250455679937,
+        "mae": 0.005394160583941456,
+        "mape": 0.0019396600285117476
+      },
+      "gradient_boost": {
+        "train_score": 0.9999994978351977,
+        "test_score": 0.9999482855819893,
+        "mae": 0.0017764957058537332,
+        "mape": 0.001114449242344483
+      },
+      "linear": {
+        "train_score": 0.9997350039349369,
+        "test_score": 0.9996490087794441,
+        "mae": 0.01806910381861542,
+        "mape": 0.05992024212245835
+      },
+      "ensemble": {
+        "train_score": 0.9998496223415192,
+        "test_score": 0.999870924476892,
+        "mae": 0.007384233027578945,
+        "mape": 0.02035471475693404
+      }
+    }
+  }
+}

@@ -93,7 +93,12 @@ class FPLMLPredictor:
         self.training_history = {}
         
         # Model paths
-        self.model_dir = Path(Config.ML_MODEL_PATH)
+        if Path(Config.ML_MODEL_PATH).is_absolute():
+            self.model_dir = Path(Config.ML_MODEL_PATH)
+        else:
+            # Use path relative to project root
+            project_root = Path(__file__).parent.parent.parent
+            self.model_dir = project_root / Config.ML_MODEL_PATH
         self.model_dir.mkdir(exist_ok=True)
         
         # Feature engineering
@@ -114,6 +119,9 @@ class FPLMLPredictor:
             # Basic feature validation
             if df.empty:
                 raise ValueError("No player data provided")
+                
+            logger.info(f"Processing {len(df)} players for feature preparation")
+            logger.info(f"Sample player data keys: {list(df.columns) if not df.empty else 'None'}")
             
             # Core features (always available in FPL data)
             features_df = pd.DataFrame()
@@ -122,6 +130,10 @@ class FPLMLPredictor:
             features_df['total_points'] = pd.to_numeric(df.get('total_points', 0), errors='coerce').fillna(0)
             features_df['points_per_game'] = pd.to_numeric(df.get('points_per_game', 0), errors='coerce').fillna(0)
             features_df['form'] = pd.to_numeric(df.get('form', 0), errors='coerce').fillna(0)
+            
+            logger.info(f"Total points range: {features_df['total_points'].min()} to {features_df['total_points'].max()}")
+            logger.info(f"Points per game range: {features_df['points_per_game'].min()} to {features_df['points_per_game'].max()}")
+            logger.info(f"Form range: {features_df['form'].min()} to {features_df['form'].max()}")
             features_df['goals_scored'] = pd.to_numeric(df.get('goals_scored', 0), errors='coerce').fillna(0)
             features_df['assists'] = pd.to_numeric(df.get('assists', 0), errors='coerce').fillna(0)
             features_df['clean_sheets'] = pd.to_numeric(df.get('clean_sheets', 0), errors='coerce').fillna(0)
@@ -156,7 +168,8 @@ class FPLMLPredictor:
             features_df['recent_form_trend'] = features_df['form']  # Could be enhanced with recent games
             
             # Playing time features
-            features_df['minutes_per_game'] = features_df['minutes'] / np.maximum(df.get('appearances', 1).fillna(1), 1)
+            appearances = pd.to_numeric(df.get('starts', df.get('appearances', 1)), errors='coerce').fillna(1)
+            features_df['minutes_per_game'] = features_df['minutes'] / np.maximum(appearances, 1)
             features_df['starter_likelihood'] = (features_df['minutes_per_game'] > 60).astype(int)
             
             # Market momentum
@@ -198,12 +211,18 @@ class FPLMLPredictor:
             
         except Exception as e:
             logger.error(f"Feature preparation failed: {e}")
+            logger.error(f"Error occurred at line: {e.__traceback__.tb_lineno if e.__traceback__ else 'unknown'}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             # Return minimal features on error
             minimal_df = pd.DataFrame({
-                'total_points': [0] * len(players_data),
-                'cost': [5.0] * len(players_data),
-                'player_id': range(len(players_data)),
-                'player_name': ['Unknown'] * len(players_data)
+                'total_points': [p.get('total_points', 0) for p in players_data],
+                'cost': [p.get('now_cost', 50) / 10.0 for p in players_data],
+                'form': [float(p.get('form', 0)) if p.get('form') else 0 for p in players_data],
+                'points_per_game': [float(p.get('points_per_game', 0)) if p.get('points_per_game') else 0 for p in players_data],
+                'minutes': [p.get('minutes', 0) for p in players_data],
+                'player_id': [p.get('id', i) for i, p in enumerate(players_data)],
+                'player_name': [p.get('web_name', 'Unknown') for p in players_data]
             })
             return minimal_df
     
@@ -217,15 +236,29 @@ class FPLMLPredictor:
             
             # Prepare target variable
             if target_column is None:
-                # Use points per game as target (normalized for next gameweek prediction)
-                y = features_df['points_per_game'].copy()
+                # Calculate points per game if not available
+                if 'points_per_game' in features_df.columns and features_df['points_per_game'].sum() > 0:
+                    y = features_df['points_per_game'].copy()
+                else:
+                    # Fallback: calculate from total_points and assume some games played
+                    # Use total_points directly for initial training
+                    y = features_df['total_points'].copy() / np.maximum(features_df.get('minutes', 1) / 90, 1)
+                    y = y.fillna(0)
             else:
                 y = features_df[target_column].copy()
             
-            # Select features for training (exclude identifiers)
-            feature_cols = [col for col in features_df.columns 
-                           if col not in ['player_id', 'player_name', 'total_points', 'points_per_game']]
+            # Select features for training (exclude identifiers and target)
+            exclude_cols = ['player_id', 'player_name']
+            # Don't exclude total_points or points_per_game if they're not the target
+            if target_column != 'total_points':
+                exclude_cols.append('total_points')
+            if target_column != 'points_per_game':
+                exclude_cols.append('points_per_game')
+                
+            feature_cols = [col for col in features_df.columns if col not in exclude_cols]
             X = features_df[feature_cols].copy()
+            
+            logger.info(f"Using {len(feature_cols)} features for training: {feature_cols[:10]}...")
             
             # Handle any infinite values
             X = X.replace([np.inf, -np.inf], 0)
@@ -361,13 +394,26 @@ class FPLMLPredictor:
             features_df = self.prepare_features(players_data)
             
             # Select features (same as used in training)
-            feature_cols = [col for col in features_df.columns 
-                           if col not in ['player_id', 'player_name', 'total_points', 'points_per_game']]
+            exclude_cols = ['player_id', 'player_name', 'total_points', 'points_per_game']
+            feature_cols = [col for col in features_df.columns if col not in exclude_cols]
             X = features_df[feature_cols].copy()
+            
+            if len(feature_cols) == 0:
+                logger.error("No features available for prediction")
+                return []
+            
+            logger.info(f"Using {len(feature_cols)} features for prediction: {feature_cols[:5]}...")
+            logger.info(f"Feature matrix shape: {X.shape}")
+            
             X = X.replace([np.inf, -np.inf], 0).fillna(0)
             
             # Make predictions
-            predictions = model.predict(X)
+            try:
+                predictions = model.predict(X)
+                logger.info(f"Generated {len(predictions)} predictions, mean: {np.mean(predictions):.2f}")
+            except Exception as e:
+                logger.error(f"Model prediction failed: {e}")
+                return []
             
             # Calculate confidence based on model uncertainty
             if hasattr(model, 'estimators_'):

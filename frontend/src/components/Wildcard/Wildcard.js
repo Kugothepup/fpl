@@ -137,15 +137,55 @@ const Wildcard = () => {
   const optimizeTeam = async () => {
     try {
       setLoading(true);
+      setError(null);
       
-      // This would call the ML optimization endpoint
-      // For now, we'll show a placeholder message
-      Alert.severity = 'info';
-      setError('Team optimization with ML will be implemented in the next phase.');
+      const response = await fetch('/api/wildcard/optimize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          budget: budget,
+          formation: formation,
+          constraints: {}
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        // Map the optimized team to our player format
+        const optimizedPlayers = data.data.team.map(player => ({
+          id: player.id,
+          name: player.name,
+          full_name: player.full_name,
+          position: player.position,
+          cost: player.cost,
+          total_points: player.total_points,
+          points_per_game: player.points_per_game,
+          predicted_points: player.predicted_points,
+          confidence: player.confidence,
+          form: player.form,
+          selected_by_percent: player.selected_by_percent
+        }));
+        
+        setSelectedPlayers(optimizedPlayers);
+        setCalculations({
+          totalCost: data.data.total_cost,
+          totalPredictedPoints: data.data.total_predicted_points,
+          avgConfidence: data.data.avg_confidence,
+          suggestedCaptain: data.data.suggested_captain,
+          isValid: data.data.is_valid
+        });
+        
+        setError(null);
+      } else {
+        throw new Error(data.error || 'Optimization failed');
+      }
       
       setLoading(false);
     } catch (err) {
-      setError(apiService.handleError(err, 'Failed to optimize team'));
+      setError('Failed to optimize team: ' + err.message);
       setLoading(false);
     }
   };

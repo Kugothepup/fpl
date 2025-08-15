@@ -6,7 +6,7 @@
 import axios from 'axios';
 
 // Configure axios defaults
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://10.2.0.2:5000/api';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -102,6 +102,17 @@ export const apiService = {
     return response.data;
   },
 
+  async getGameweekScorePredictions() {
+    const response = await api.get('/predictions/gameweek-scores');
+    return response.data;
+  },
+
+  async getTeamScorePrediction(teamId = null) {
+    const params = teamId ? { team_id: teamId } : {};
+    const response = await api.get('/predictions/team-score', { params });
+    return response.data;
+  },
+
   // Weather Data
   async getWeather(cities = null) {
     const params = cities ? { cities } : {};
@@ -155,5 +166,15 @@ export const apiService = {
     }
   },
 };
+
+// Convenience exports for common operations
+export const fetchPredictions = () => apiService.predictPlayerPoints();
+export const fetchCaptainRecommendation = (teamId) => apiService.getCaptainRecommendation(teamId);
+export const trainModels = () => apiService.trainModels();
+export const fetchWeather = (cities) => apiService.getWeather(cities);
+export const fetchNews = (hoursBack, maxArticles) => apiService.getNews(hoursBack, maxArticles);
+export const fetchAccuracyStats = (days) => apiService.getAccuracyStats(days);
+export const fetchGameweekScores = () => apiService.getGameweekScorePredictions();
+export const fetchTeamScore = (teamId) => apiService.getTeamScorePrediction(teamId);
 
 export default apiService;

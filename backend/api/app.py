@@ -613,6 +613,289 @@ def create_app(config_name='default'):
             logger.error(f"Model training failed: {e}")
             return jsonify({'error': str(e)}), 500
     
+    @app.route('/api/predictions/gameweek-scores', methods=['GET'])
+    def predict_gameweek_scores():
+        """Predict match scores for upcoming gameweek"""
+        try:
+            # Get fixtures for next gameweek
+            fixtures = fpl_manager.fetch_fixtures()
+            upcoming_fixtures = [f for f in fixtures if not f.finished and f.gameweek == (fpl_manager.current_gameweek or 1)]
+            
+            # Simple score prediction based on team strength and form
+            score_predictions = []
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            teams_data = fpl_data.get('teams', []) if fpl_data else []
+            
+            for fixture in upcoming_fixtures[:10]:  # Limit to 10 fixtures
+                # Find team data
+                home_team_data = next((t for t in teams_data if t['id'] == fixture.home_team_id), None)
+                away_team_data = next((t for t in teams_data if t['id'] == fixture.away_team_id), None)
+                
+                if home_team_data and away_team_data:
+                    # Simple prediction based on team strength
+                    home_strength = home_team_data.get('strength_overall_home', 1200)
+                    away_strength = away_team_data.get('strength_overall_away', 1200)
+                    
+                    # Basic score prediction (simplified)
+                    strength_diff = (home_strength - away_strength) / 100
+                    
+                    # Predict scores (very basic model)
+                    home_score = max(0, round(1.5 + strength_diff * 0.3))
+                    away_score = max(0, round(1.2 - strength_diff * 0.3))
+                    
+                    # Calculate confidence based on strength difference
+                    confidence = min(0.9, 0.5 + abs(strength_diff) * 0.05)
+                    
+                    score_predictions.append({
+                        'fixture_id': fixture.id,
+                        'home_team': fixture.home_team,
+                        'away_team': fixture.away_team,
+                        'kickoff_time': fixture.kickoff_time,
+                        'predicted_score': f"{home_score}-{away_score}",
+                        'home_score': home_score,
+                        'away_score': away_score,
+                        'confidence': round(confidence, 2),
+                        'reasoning': f"Based on team strength: {fixture.home_team} ({home_strength}) vs {fixture.away_team} ({away_strength})"
+                    })
+            
+            return jsonify({
+                'success': True,
+                'data': score_predictions,
+                'gameweek': fpl_manager.current_gameweek or 1,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Gameweek score prediction failed: {e}")
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/predictions/team-score', methods=['GET'])
+    def predict_team_score():
+        """Predict user's FPL team score for next gameweek"""
+        try:
+            team_id = request.args.get('team_id', Config.FPL_TEAM_ID)
+            
+            # Get user team and FPL data
+            user_team = fpl_manager.fetch_user_team(team_id)
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            
+            if not user_team or not fpl_data:
+                return jsonify({'error': 'Failed to fetch team data'}), 500
+            
+            players_data = fpl_data.get('elements', [])
+            
+            # Get predictions for user's players
+            if user_team and 'picks' in user_team:
+                user_player_ids = [pick['element'] for pick in user_team['picks']]
+                user_players_data = [p for p in players_data if p['id'] in user_player_ids]
+                
+                # Get ML predictions for user's players
+                predictions = ml_predictor.predict_next_gameweek_points(user_players_data)
+                
+                # Calculate team score
+                total_predicted_points = 0
+                captain_id = None
+                vice_captain_id = None
+                
+                # Find captain and vice captain
+                for pick in user_team['picks']:
+                    if pick['is_captain']:
+                        captain_id = pick['element']
+                    elif pick['is_vice_captain']:
+                        vice_captain_id = pick['element']
+                
+                # Calculate predicted points for each player
+                player_predictions = []
+                for pick in user_team['picks']:
+                    player_pred = next((p for p in predictions if p.player_id == pick['element']), None)
+                    
+                    if player_pred:
+                        points = player_pred.predicted_points
+                        
+                        # Double points for captain
+                        if pick['is_captain']:
+                            points *= 2
+                        
+                        total_predicted_points += points
+                        
+                        player_predictions.append({
+                            'player_id': pick['element'],
+                            'player_name': player_pred.player_name,
+                            'position': player_pred.position,
+                            'predicted_points': round(player_pred.predicted_points, 1),
+                            'final_points': round(points, 1),
+                            'is_captain': pick['is_captain'],
+                            'is_vice_captain': pick['is_vice_captain'],
+                            'multiplier': pick['multiplier']
+                        })
+                
+                # Team score breakdown
+                team_score_prediction = {
+                    'total_predicted_points': round(total_predicted_points, 1),
+                    'captain_id': captain_id,
+                    'vice_captain_id': vice_captain_id,
+                    'player_predictions': sorted(player_predictions, key=lambda x: x['final_points'], reverse=True),
+                    'confidence': round(sum(p.confidence for p in predictions) / len(predictions) if predictions else 0, 2),
+                    'gameweek': fpl_manager.current_gameweek or 1
+                }
+                
+                return jsonify({
+                    'success': True,
+                    'data': team_score_prediction,
+                    'team_info': {
+                        'id': team_id,
+                        'name': user_team.get('name', 'Unknown Team'),
+                        'player_first_name': user_team.get('player_first_name', ''),
+                        'player_last_name': user_team.get('player_last_name', ''),
+                        'overall_rank': user_team.get('summary_overall_rank'),
+                        'gameweek_rank': user_team.get('summary_event_rank'),
+                        'total_points': user_team.get('summary_overall_points'),
+                        'gameweek_points': user_team.get('summary_event_points')
+                    },
+                    'timestamp': datetime.now().isoformat()
+                })
+            
+            return jsonify({'error': 'No team data found'}), 404
+            
+        except Exception as e:
+            logger.error(f"Team score prediction failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/wildcard/optimize', methods=['POST'])
+    def optimize_wildcard_team():
+        """Optimize wildcard team using ML predictions"""
+        try:
+            data = request.get_json()
+            budget = data.get('budget', 100.0)
+            formation = data.get('formation', '3-4-3')
+            constraints = data.get('constraints', {})
+            
+            # Formation requirements
+            formations = {
+                '3-4-3': {'GK': 1, 'DEF': 3, 'MID': 4, 'FWD': 3},
+                '3-5-2': {'GK': 1, 'DEF': 3, 'MID': 5, 'FWD': 2},
+                '4-3-3': {'GK': 1, 'DEF': 4, 'MID': 3, 'FWD': 3},
+                '4-4-2': {'GK': 1, 'DEF': 4, 'MID': 4, 'FWD': 2},
+                '4-5-1': {'GK': 1, 'DEF': 4, 'MID': 5, 'FWD': 1},
+                '5-3-2': {'GK': 1, 'DEF': 5, 'MID': 3, 'FWD': 2},
+                '5-4-1': {'GK': 1, 'DEF': 5, 'MID': 4, 'FWD': 1},
+            }
+            
+            formation_req = formations.get(formation, formations['3-4-3'])
+            
+            # Get FPL data and predictions
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            if not fpl_data:
+                return jsonify({'error': 'Failed to fetch FPL data'}), 500
+                
+            players_data = fpl_data.get('elements', [])
+            
+            # Get ML predictions for all players
+            predictions = ml_predictor.predict_next_gameweek_points(players_data)
+            
+            if not predictions:
+                return jsonify({'error': 'No ML predictions available'}), 500
+            
+            # Create player lookup with predictions and costs
+            player_lookup = {}
+            for player in players_data:
+                pred = next((p for p in predictions if p.player_id == player['id']), None)
+                if pred:
+                    # Map position numbers to strings
+                    pos_map = {1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}
+                    position = pos_map.get(player['element_type'], 'MID')
+                    
+                    player_lookup[player['id']] = {
+                        'id': player['id'],
+                        'name': player['web_name'],
+                        'full_name': f"{player['first_name']} {player['second_name']}",
+                        'position': position,
+                        'team': player['team'],
+                        'cost': player['now_cost'] / 10.0,
+                        'predicted_points': pred.predicted_points,
+                        'confidence': pred.confidence,
+                        'total_points': player['total_points'],
+                        'points_per_game': float(player['points_per_game']) if player['points_per_game'] else 0,
+                        'form': float(player['form']) if player['form'] else 0,
+                        'selected_by_percent': float(player['selected_by_percent']) if player['selected_by_percent'] else 0
+                    }
+            
+            # Simple greedy optimization algorithm
+            optimized_team = []
+            remaining_budget = budget
+            position_counts = {'GK': 0, 'DEF': 0, 'MID': 0, 'FWD': 0}
+            
+            # Sort players by value efficiency (predicted points per cost)
+            sorted_players = sorted(
+                player_lookup.values(),
+                key=lambda x: (x['predicted_points'] / max(x['cost'], 0.1)) * x['confidence'],
+                reverse=True
+            )
+            
+            # Fill each position according to formation
+            for position, required_count in formation_req.items():
+                position_players = [p for p in sorted_players if p['position'] == position]
+                
+                for player in position_players:
+                    if (position_counts[position] < required_count and 
+                        player['cost'] <= remaining_budget and
+                        len(optimized_team) < 15 and
+                        player['id'] not in [p['id'] for p in optimized_team]):
+                        
+                        optimized_team.append(player)
+                        remaining_budget -= player['cost']
+                        position_counts[position] += 1
+                        
+                        if position_counts[position] >= required_count:
+                            break
+            
+            # Fill remaining positions if under 15 players
+            remaining_positions = []
+            for pos, count in position_counts.items():
+                max_allowed = {'GK': 2, 'DEF': 5, 'MID': 5, 'FWD': 3}[pos]
+                for _ in range(min(max_allowed - count, 15 - len(optimized_team))):
+                    remaining_positions.append(pos)
+            
+            for position in remaining_positions:
+                position_players = [p for p in sorted_players 
+                                 if p['position'] == position and 
+                                 p['id'] not in [p['id'] for p in optimized_team]]
+                
+                for player in position_players:
+                    if (player['cost'] <= remaining_budget and 
+                        len(optimized_team) < 15):
+                        optimized_team.append(player)
+                        remaining_budget -= player['cost']
+                        break
+            
+            # Calculate team statistics
+            total_predicted_points = sum(p['predicted_points'] for p in optimized_team)
+            total_cost = sum(p['cost'] for p in optimized_team)
+            avg_confidence = sum(p['confidence'] for p in optimized_team) / len(optimized_team) if optimized_team else 0
+            
+            # Suggest captain (highest predicted points)
+            captain = max(optimized_team, key=lambda x: x['predicted_points']) if optimized_team else None
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'team': optimized_team,
+                    'formation': formation,
+                    'total_cost': round(total_cost, 1),
+                    'remaining_budget': round(remaining_budget, 1),
+                    'total_predicted_points': round(total_predicted_points, 1),
+                    'avg_confidence': round(avg_confidence, 2),
+                    'suggested_captain': captain,
+                    'position_counts': position_counts,
+                    'is_valid': len(optimized_team) == 15 and remaining_budget >= 0
+                },
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Wildcard optimization failed: {e}")
+            return jsonify({'error': str(e)}), 500
+    
     return app
 
 # Create the Flask application
@@ -634,7 +917,7 @@ if __name__ == '__main__':
     
     try:
         app.run(
-            host=Config.API_HOST,
+            host='0.0.0.0',
             port=Config.API_PORT,
             debug=Config.DEBUG
         )

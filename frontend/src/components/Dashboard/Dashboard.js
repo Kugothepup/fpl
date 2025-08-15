@@ -41,6 +41,9 @@ import TopPredictions from './TopPredictions';
 import WeatherWidget from './WeatherWidget';
 import NewsWidget from './NewsWidget';
 import AccuracyWidget from './AccuracyWidget';
+import GameweekScores from './GameweekScores';
+import TeamScoreWidget from './TeamScoreWidget';
+import MyTeamWidget from './MyTeamWidget';
 
 // Import API service
 import { apiService } from '../../services/api';
@@ -233,9 +236,24 @@ const Dashboard = () => {
             <QuickStats systemStatus={systemStatus} />
           </Grid>
 
+          {/* My Team Details */}
+          <Grid item xs={12} md={6}>
+            <MyTeamWidget />
+          </Grid>
+
+          {/* Team Score Prediction */}
+          <Grid item xs={12} md={6}>
+            <TeamScoreWidget />
+          </Grid>
+
           {/* Captain Recommendation */}
           <Grid item xs={12} md={6}>
             <CaptainRecommendation />
+          </Grid>
+
+          {/* Gameweek Score Predictions */}
+          <Grid item xs={12} md={6}>
+            <GameweekScores />
           </Grid>
 
           {/* Top Predictions */}
