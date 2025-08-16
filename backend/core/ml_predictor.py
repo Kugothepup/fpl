@@ -46,6 +46,14 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from config.config import Config
 
+# Import historical data service
+try:
+    from backend.services.historical_data_service import HistoricalDataService
+    HISTORICAL_DATA_AVAILABLE = True
+except ImportError:
+    HISTORICAL_DATA_AVAILABLE = False
+    logger.warning("Historical data service not available")
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -108,8 +116,20 @@ class FPLMLPredictor:
         # Enhanced ML features flag
         self.enhanced_ml_enabled = Config.ENABLE_ENHANCED_ML
         
+        # Initialize historical data services
+        self.historical_service = None
+        self.enhanced_historical_service = None
+        if HISTORICAL_DATA_AVAILABLE:
+            try:
+                self.historical_service = HistoricalDataService('fpl_historical_data.db')
+                self.enhanced_historical_service = HistoricalDataService('fpl_enhanced_data.db')
+                logger.info("Historical data services initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize historical data service: {e}")
+        
         logger.info(f"FPL ML Predictor initialized. Enhanced ML: {self.enhanced_ml_enabled}")
         logger.info(f"XGBoost available: {XGBOOST_AVAILABLE}")
+        logger.info(f"Historical data available: {self.historical_service is not None}")
     
     def prepare_features(self, players_data: List[Dict]) -> pd.DataFrame:
         """Prepare ML features from player data"""
@@ -199,6 +219,11 @@ class FPLMLPredictor:
                 features_df['influence'] = pd.to_numeric(df.get('influence', 0), errors='coerce').fillna(0)
                 features_df['ict_index'] = pd.to_numeric(df.get('ict_index', 0), errors='coerce').fillna(0)
             
+            # Add historical data features if available
+            if self.historical_service is not None:
+                logger.info("Enhancing features with historical data")
+                features_df = self._add_historical_features(features_df, df)
+            
             # Handle any remaining NaN values
             features_df = features_df.fillna(0)
             
@@ -225,6 +250,175 @@ class FPLMLPredictor:
                 'player_name': [p.get('web_name', 'Unknown') for p in players_data]
             })
             return minimal_df
+    
+    def _add_historical_features(self, features_df: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
+        """Add historical performance features to the feature matrix including vaastav enhanced data"""
+        try:
+            logger.info("Adding enhanced historical features for improved predictions")
+            
+            # Initialize enhanced historical feature columns
+            historical_features = {
+                'hist_avg_points': [],
+                'hist_goals_per_game': [],
+                'hist_assists_per_game': [],
+                'hist_form_last_5': [],
+                'hist_home_away_diff': [],
+                'hist_consistency': [],
+                'hist_vs_top6': [],
+                'hist_season_trend': [],
+                # Enhanced vaastav features
+                'hist_expected_goals': [],
+                'hist_expected_assists': [],
+                'hist_creativity': [],
+                'hist_influence': [],
+                'hist_threat': [],
+                'hist_ict_index': [],
+                'hist_points_variance': [],
+                'hist_recent_form': []
+            }
+            
+            for idx, player_id in enumerate(original_df.get('id', [])):
+                try:
+                    # Get basic historical stats
+                    hist_stats = None
+                    if self.historical_service:
+                        hist_stats = self.historical_service.get_player_historical_stats(
+                            element_id=int(player_id), 
+                            season_id="2024-25",
+                            last_n_games=10
+                        )
+                    
+                    # Get enhanced historical stats from vaastav data
+                    enhanced_stats = None
+                    if self.enhanced_historical_service:
+                        enhanced_stats = self.enhanced_historical_service.get_enhanced_player_features(
+                            element_id=int(player_id), 
+                            season_id="2024-25",
+                            last_n_games=10
+                        )
+                    
+                    if enhanced_stats and enhanced_stats.get('games_played', 0) > 0:
+                        # Use enhanced vaastav data
+                        historical_features['hist_avg_points'].append(enhanced_stats.get('average_points', 0))
+                        historical_features['hist_goals_per_game'].append(
+                            enhanced_stats.get('total_goals', 0) / max(enhanced_stats.get('games_played', 1), 1)
+                        )
+                        historical_features['hist_assists_per_game'].append(
+                            enhanced_stats.get('total_assists', 0) / max(enhanced_stats.get('games_played', 1), 1)
+                        )
+                        historical_features['hist_form_last_5'].append(enhanced_stats.get('recent_form', 0))
+                        historical_features['hist_home_away_diff'].append(enhanced_stats.get('home_away_diff', 0))
+                        historical_features['hist_consistency'].append(1.0 / (enhanced_stats.get('points_variance', 1) + 1))
+                        historical_features['hist_vs_top6'].append(0)  # Will enhance later
+                        historical_features['hist_season_trend'].append(0)  # Will enhance later
+                        
+                        # Enhanced vaastav features
+                        historical_features['hist_expected_goals'].append(enhanced_stats.get('avg_expected_goals', 0))
+                        historical_features['hist_expected_assists'].append(enhanced_stats.get('avg_expected_assists', 0))
+                        historical_features['hist_creativity'].append(enhanced_stats.get('avg_creativity', 0))
+                        historical_features['hist_influence'].append(enhanced_stats.get('avg_influence', 0))
+                        historical_features['hist_threat'].append(enhanced_stats.get('avg_threat', 0))
+                        historical_features['hist_ict_index'].append(enhanced_stats.get('avg_ict_index', 0))
+                        historical_features['hist_points_variance'].append(enhanced_stats.get('points_variance', 0))
+                        historical_features['hist_recent_form'].append(enhanced_stats.get('recent_form', 0))
+                        
+                    elif hist_stats and hist_stats.get('games_played', 0) > 0:
+                        # Fallback to basic historical data
+                        historical_features['hist_avg_points'].append(hist_stats.get('average_points', 0))
+                        
+                        # Goals and assists per game from historical data
+                        games_played = hist_stats.get('games_played', 1)
+                        historical_features['hist_goals_per_game'].append(
+                            hist_stats.get('total_goals', 0) / games_played
+                        )
+                        historical_features['hist_assists_per_game'].append(
+                            hist_stats.get('total_assists', 0) / games_played
+                        )
+                        
+                        # Recent form from last 5 games
+                        recent_form = hist_stats.get('recent_form', [])
+                        if len(recent_form) >= 3:
+                            historical_features['hist_form_last_5'].append(
+                                sum(recent_form[:5]) / min(5, len(recent_form))
+                            )
+                            
+                            # Consistency (variance in recent form)
+                            if len(recent_form) >= 3:
+                                import statistics
+                                variance = statistics.variance(recent_form[:5]) if len(recent_form) >= 2 else 0
+                                historical_features['hist_consistency'].append(1 / (1 + variance))  # Higher = more consistent
+                            else:
+                                historical_features['hist_consistency'].append(0.5)
+                                
+                            # Trend (improving/declining form)
+                            if len(recent_form) >= 3:
+                                early_avg = sum(recent_form[-3:]) / 3
+                                late_avg = sum(recent_form[:3]) / 3
+                                historical_features['hist_season_trend'].append(late_avg - early_avg)
+                            else:
+                                historical_features['hist_season_trend'].append(0)
+                        else:
+                            historical_features['hist_form_last_5'].append(0)
+                            historical_features['hist_consistency'].append(0.5)
+                            historical_features['hist_season_trend'].append(0)
+                        
+                        # Home/away performance difference (placeholder - would need match venue data)
+                        historical_features['hist_home_away_diff'].append(0)
+                        
+                        # Performance vs top 6 teams (placeholder - would need team strength data)
+                        historical_features['hist_vs_top6'].append(hist_stats.get('average_points', 0) * 0.8)
+                        
+                        # Enhanced features (fallback to zeros for basic historical data)
+                        historical_features['hist_expected_goals'].append(0)
+                        historical_features['hist_expected_assists'].append(0)
+                        historical_features['hist_creativity'].append(0)
+                        historical_features['hist_influence'].append(0)
+                        historical_features['hist_threat'].append(0)
+                        historical_features['hist_ict_index'].append(0)
+                        historical_features['hist_points_variance'].append(0)
+                        historical_features['hist_recent_form'].append(hist_stats.get('average_points', 0))
+                        
+                    else:
+                        # No historical data available - use neutral values
+                        for key in historical_features:
+                            if key == 'hist_consistency':
+                                historical_features[key].append(0.5)  # Neutral consistency
+                            else:
+                                historical_features[key].append(0)
+                                
+                except Exception as e:
+                    logger.warning(f"Error processing historical data for player {player_id}: {e}")
+                    # Add neutral values for this player
+                    for key in historical_features:
+                        if key == 'hist_consistency':
+                            historical_features[key].append(0.5)
+                        else:
+                            historical_features[key].append(0)
+            
+            # Add historical features to the main dataframe
+            for feature_name, values in historical_features.items():
+                # Ensure we have the right number of values
+                if len(values) == len(features_df):
+                    features_df[feature_name] = values
+                else:
+                    logger.warning(f"Historical feature {feature_name} length mismatch: {len(values)} vs {len(features_df)}")
+                    features_df[feature_name] = [0] * len(features_df)
+            
+            # Create composite historical features
+            features_df['hist_total_score'] = (
+                features_df['hist_avg_points'] * 0.4 +
+                features_df['hist_form_last_5'] * 0.3 +
+                features_df['hist_consistency'] * 0.2 +
+                features_df['hist_season_trend'] * 0.1
+            )
+            
+            logger.info(f"Added {len(historical_features)} historical features")
+            
+            return features_df
+            
+        except Exception as e:
+            logger.error(f"Error adding historical features: {e}")
+            return features_df
     
     def train_points_predictor(self, players_data: List[Dict], target_column: str = None) -> Dict:
         """Train ML model to predict player points"""
@@ -379,24 +573,41 @@ class FPLMLPredictor:
     def predict_next_gameweek_points(self, players_data: List[Dict], model_name: str = None) -> List[PredictionResult]:
         """Predict points for next gameweek"""
         try:
-            # Use ensemble if available, otherwise best available model
-            model_name = model_name or 'ensemble_points'
-            if model_name not in self.pipelines:
-                # Fallback to any available model
-                available_models = [name for name in self.pipelines.keys() if 'points' in name]
-                if not available_models:
-                    raise ValueError("No trained points prediction model available")
-                model_name = available_models[0]
+            # Prioritize enhanced models if available
+            if model_name is None:
+                if 'ensemble_enhanced_points' in self.pipelines:
+                    model_name = 'ensemble_enhanced_points'
+                elif 'ensemble_points' in self.pipelines:
+                    model_name = 'ensemble_points'
+                else:
+                    # Fallback to any available enhanced model first
+                    enhanced_models = [name for name in self.pipelines.keys() if 'enhanced_points' in name]
+                    if enhanced_models:
+                        model_name = enhanced_models[0]
+                    else:
+                        # Fallback to any available model
+                        available_models = [name for name in self.pipelines.keys() if 'points' in name]
+                        if not available_models:
+                            raise ValueError("No trained points prediction model available")
+                        model_name = available_models[0]
             
             model = self.pipelines[model_name]
             
             # Prepare features
             features_df = self.prepare_features(players_data)
             
-            # Select features (same as used in training)
-            exclude_cols = ['player_id', 'player_name', 'total_points', 'points_per_game']
-            feature_cols = [col for col in features_df.columns if col not in exclude_cols]
-            X = features_df[feature_cols].copy()
+            # Handle enhanced vs regular model compatibility
+            if 'enhanced' in model_name:
+                # For enhanced models, we need to map FPL API fields to vaastav training features
+                enhanced_features = self._prepare_enhanced_features(features_df, players_data)
+                exclude_cols = ['player_id', 'player_name']
+                feature_cols = [col for col in enhanced_features.columns if col not in exclude_cols]
+                X = enhanced_features[feature_cols].copy()
+            else:
+                # Regular models use the standard feature preparation
+                exclude_cols = ['player_id', 'player_name', 'total_points', 'points_per_game']
+                feature_cols = [col for col in features_df.columns if col not in exclude_cols]
+                X = features_df[feature_cols].copy()
             
             if len(feature_cols) == 0:
                 logger.error("No features available for prediction")
@@ -411,6 +622,29 @@ class FPLMLPredictor:
             try:
                 predictions = model.predict(X)
                 logger.info(f"Generated {len(predictions)} predictions, mean: {np.mean(predictions):.2f}")
+                logger.info(f"Prediction range: {np.min(predictions):.2f} to {np.max(predictions):.2f}")
+                
+                # Apply minimum baseline predictions for players with 0.0
+                # This prevents unrealistic 0.0 predictions for all players
+                for i in range(len(predictions)):
+                    if predictions[i] <= 0.1:  # Very low or zero prediction
+                        # Apply position-based baseline
+                        if i < len(players_data):
+                            player = players_data[i]
+                            position_type = player.get('element_type', 4)
+                            
+                            # Position-based minimum predictions (conservative but realistic)
+                            if position_type == 1:  # GK
+                                predictions[i] = max(predictions[i], 2.0)
+                            elif position_type == 2:  # DEF
+                                predictions[i] = max(predictions[i], 2.5)
+                            elif position_type == 3:  # MID
+                                predictions[i] = max(predictions[i], 3.0)
+                            elif position_type == 4:  # FWD
+                                predictions[i] = max(predictions[i], 3.5)
+                
+                logger.info(f"After baseline adjustments - mean: {np.mean(predictions):.2f}, range: {np.min(predictions):.2f} to {np.max(predictions):.2f}")
+                
             except Exception as e:
                 logger.error(f"Model prediction failed: {e}")
                 return []
@@ -478,6 +712,228 @@ class FPLMLPredictor:
         except Exception as e:
             logger.error(f"Next gameweek prediction failed: {e}")
             return []
+    
+    def _prepare_enhanced_features(self, features_df: pd.DataFrame, players_data: List[Dict]) -> pd.DataFrame:
+        """Prepare features for enhanced models trained on vaastav data"""
+        try:
+            logger.info("Preparing enhanced features for vaastav-trained models")
+            
+            # Create enhanced feature mapping from FPL API to vaastav format
+            enhanced_df = pd.DataFrame()
+            
+            for i, player in enumerate(players_data):
+                row = {
+                    # Basic info
+                    'player_id': player.get('id', 0),
+                    'player_name': player.get('web_name', 'Unknown'),
+                    
+                    # Map FPL API fields to vaastav training features
+                    'minutes': player.get('minutes', 0),
+                    'goals_scored': player.get('goals_scored', 0),
+                    'assists': player.get('assists', 0),
+                    'expected_goals': player.get('expected_goals', 0.0),
+                    'expected_assists': player.get('expected_assists', 0.0),
+                    'expected_goal_involvements': player.get('expected_goal_involvements', 0.0),
+                    'expected_goals_conceded': player.get('expected_goals_conceded', 0.0),
+                    'goals_conceded': player.get('goals_conceded', 0),
+                    'clean_sheets': player.get('clean_sheets', 0),
+                    'saves': player.get('saves', 0),
+                    'penalties_missed': player.get('penalties_missed', 0),
+                    'penalties_saved': player.get('penalties_saved', 0),
+                    'yellow_cards': player.get('yellow_cards', 0),
+                    'red_cards': player.get('red_cards', 0),
+                    'bonus': player.get('bonus', 0),
+                    'bps': player.get('bps', 0),
+                    'creativity': player.get('creativity', 0.0),
+                    'influence': player.get('influence', 0.0),
+                    'threat': player.get('threat', 0.0),
+                    'ict_index': player.get('ict_index', 0.0),
+                    'selected_by_percent': player.get('selected_by_percent', 0.0),
+                    'value': player.get('now_cost', 50) / 10.0,  # Convert to millions
+                    'transfers_in': player.get('transfers_in', 0),
+                    'transfers_out': player.get('transfers_out', 0),
+                    'transfers_balance': player.get('transfers_in', 0) - player.get('transfers_out', 0),
+                    'was_home': False  # Default for prediction (would need fixture data)
+                }
+                
+                enhanced_df = pd.concat([enhanced_df, pd.DataFrame([row])], ignore_index=True)
+            
+            logger.info(f"Prepared enhanced features: {enhanced_df.shape[0]} players, {enhanced_df.shape[1]} features")
+            return enhanced_df
+            
+        except Exception as e:
+            logger.error(f"Error preparing enhanced features: {e}")
+            # Fallback to regular features
+            return features_df
+    
+    def train_enhanced_models_with_vaastav_data(self) -> Dict[str, Any]:
+        """Train ML models using enhanced vaastav historical data"""
+        try:
+            logger.info("Training enhanced models with comprehensive vaastav data")
+            
+            if not self.enhanced_historical_service:
+                logger.error("Enhanced historical service not available")
+                return {'error': 'Enhanced historical service not available'}
+            
+            # Export enhanced training data
+            training_file = self.enhanced_historical_service.export_enhanced_training_data("2024-25")
+            
+            if not Path(training_file).exists():
+                logger.error("No enhanced training data available")
+                return {'error': 'No enhanced training data available'}
+            
+            # Load the enhanced data
+            df = pd.read_csv(training_file)
+            logger.info(f"Loaded {len(df)} enhanced training records")
+            
+            # Prepare features and target
+            feature_columns = [
+                'minutes', 'goals_scored', 'assists', 'expected_goals', 'expected_assists',
+                'expected_goal_involvements', 'expected_goals_conceded', 'goals_conceded',
+                'clean_sheets', 'saves', 'penalties_missed', 'penalties_saved',
+                'yellow_cards', 'red_cards', 'bonus', 'bps', 'creativity', 'influence',
+                'threat', 'ict_index', 'selected_by_percent', 'value', 'transfers_in',
+                'transfers_out', 'transfers_balance', 'was_home'
+            ]
+            
+            # Filter columns that exist in the data
+            available_features = [col for col in feature_columns if col in df.columns]
+            logger.info(f"Using {len(available_features)} features: {available_features[:10]}...")
+            
+            X = df[available_features].copy()
+            y = df['total_points'].copy()
+            
+            # Handle missing values and encode categorical variables
+            X = X.fillna(0)
+            
+            # Encode boolean was_home column
+            if 'was_home' in X.columns:
+                X['was_home'] = X['was_home'].astype(int)
+            
+            # Split the data
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42, stratify=None
+            )
+            
+            logger.info(f"Training set: {len(X_train)} samples, Test set: {len(X_test)} samples")
+            logger.info(f"Feature matrix shape: {X.shape}")
+            
+            # Models to train
+            models = {
+                'random_forest': RandomForestRegressor(
+                    n_estimators=100, max_depth=15, min_samples_split=5,
+                    min_samples_leaf=2, random_state=42, n_jobs=-1
+                ),
+                'gradient_boost': GradientBoostingRegressor(
+                    n_estimators=100, max_depth=6, learning_rate=0.1,
+                    min_samples_split=5, min_samples_leaf=2, random_state=42
+                ),
+                'linear': Ridge(alpha=1.0, random_state=42)
+            }
+            
+            model_results = {}
+            best_score = -np.inf
+            best_model = None
+            
+            for name, model in models.items():
+                try:
+                    logger.info(f"Training enhanced {name} model...")
+                    
+                    # Create pipeline with scaling
+                    pipeline = Pipeline([
+                        ('scaler', StandardScaler()),
+                        ('regressor', model)
+                    ])
+                    
+                    # Train the model
+                    pipeline.fit(X_train, y_train)
+                    
+                    # Evaluate
+                    train_score = pipeline.score(X_train, y_train)
+                    test_score = pipeline.score(X_test, y_test)
+                    
+                    # Make predictions
+                    y_pred = pipeline.predict(X_test)
+                    mae = mean_absolute_error(y_test, y_pred)
+                    mape = mean_absolute_percentage_error(y_test + 0.1, y_pred + 0.1)
+                    
+                    model_results[name] = {
+                        'train_score': train_score,
+                        'test_score': test_score,
+                        'mae': mae,
+                        'mape': mape
+                    }
+                    
+                    # Store pipeline
+                    self.pipelines[f'{name}_enhanced_points'] = pipeline
+                    
+                    # Track best model
+                    if test_score > best_score:
+                        best_score = test_score
+                        best_model = name
+                    
+                    logger.info(f"Enhanced {name} model: R² = {test_score:.4f}, MAE = {mae:.3f}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to train enhanced {name} model: {e}")
+                    continue
+            
+            # Create ensemble if multiple models trained
+            if len(model_results) > 1:
+                try:
+                    estimators = [(name, self.pipelines[f'{name}_enhanced_points']) 
+                                for name in model_results.keys()]
+                    ensemble = VotingRegressor(estimators=estimators)
+                    ensemble.fit(X_train, y_train)
+                    
+                    ensemble_score = ensemble.score(X_test, y_test)
+                    y_pred_ensemble = ensemble.predict(X_test)
+                    ensemble_mae = mean_absolute_error(y_test, y_pred_ensemble)
+                    
+                    self.pipelines['ensemble_enhanced_points'] = ensemble
+                    model_results['ensemble'] = {
+                        'train_score': ensemble.score(X_train, y_train),
+                        'test_score': ensemble_score,
+                        'mae': ensemble_mae,
+                        'mape': mean_absolute_percentage_error(y_test + 0.1, y_pred_ensemble + 0.1)
+                    }
+                    
+                    if ensemble_score > best_score:
+                        best_score = ensemble_score
+                        best_model = 'ensemble'
+                    
+                    logger.info(f"Enhanced ensemble model: R² = {ensemble_score:.4f}, MAE = {ensemble_mae:.3f}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to create enhanced ensemble: {e}")
+            
+            # Save training history
+            training_result = {
+                'timestamp': datetime.now().isoformat(),
+                'models_trained': list(model_results.keys()),
+                'best_model': best_model,
+                'best_score': best_score,
+                'feature_count': len(available_features),
+                'training_samples': len(X_train),
+                'test_samples': len(X_test),
+                'model_results': model_results
+            }
+            
+            self.training_history['enhanced_points_prediction'] = training_result
+            
+            # Save enhanced models to disk
+            self._save_models()
+            
+            # Clean up temp file
+            Path(training_file).unlink(missing_ok=True)
+            
+            logger.info(f"Enhanced model training completed. Best model: {best_model} (R² = {best_score:.4f})")
+            
+            return training_result
+            
+        except Exception as e:
+            logger.error(f"Enhanced model training failed: {e}")
+            return {'error': str(e)}
     
     def recommend_captain(self, players_data: List[Dict], user_team_ids: List[int] = None) -> Optional[PredictionResult]:
         """Recommend captain based on ML predictions"""

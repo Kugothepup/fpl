@@ -680,6 +680,31 @@ def create_app(config_name='default'):
             logger.error(f"Model training failed: {e}")
             return jsonify({'error': str(e)}), 500
     
+    @app.route('/api/train-enhanced-models', methods=['POST'])
+    def train_enhanced_models():
+        """Train ML models with enhanced vaastav historical data"""
+        try:
+            logger.info("Starting enhanced model training with vaastav data...")
+            
+            # Train enhanced models
+            training_result = ml_predictor.train_enhanced_models_with_vaastav_data()
+            
+            if 'error' in training_result:
+                return jsonify({
+                    'success': False,
+                    'error': training_result['error']
+                }), 500
+            
+            return jsonify({
+                'success': True,
+                'data': training_result,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Enhanced model training failed: {e}")
+            return jsonify({'error': str(e)}), 500
+    
     @app.route('/api/predictions/gameweek-scores', methods=['GET'])
     def predict_gameweek_scores():
         """Predict match scores for upcoming gameweek"""
@@ -742,9 +767,18 @@ def create_app(config_name='default'):
         try:
             team_id = request.args.get('team_id', Config.FPL_TEAM_ID)
             
-            # Get user team and FPL data
+            # Get user team and FPL data (using same method as team endpoint)
             user_team = fpl_manager.fetch_user_team(team_id)
             fpl_data = fpl_manager.fetch_bootstrap_data()
+            
+            # Get team entry data for team name and player info (same as team endpoint)
+            entry_data = None
+            try:
+                entry_response = fpl_manager.session.get(f"{fpl_manager.base_url}/entry/{team_id}/", timeout=30)
+                if entry_response.status_code == 200:
+                    entry_data = entry_response.json()
+            except:
+                pass  # Entry data is optional
             
             if not user_team or not fpl_data:
                 return jsonify({'error': 'Failed to fetch team data'}), 500
@@ -806,16 +840,21 @@ def create_app(config_name='default'):
                     'gameweek': fpl_manager.current_gameweek or 1
                 }
                 
+                # Extract team info from the enriched team data
+                team_entry = user_team.get('entry', {})
+                entry_history = user_team.get('entry_history', {})
+                
+                
                 return jsonify({
                     'success': True,
                     'data': team_score_prediction,
                     'team_info': {
                         'id': team_id,
-                        'name': user_team.get('name', 'Unknown Team'),
-                        'player_first_name': user_team.get('player_first_name', ''),
-                        'player_last_name': user_team.get('player_last_name', ''),
-                        'overall_rank': user_team.get('summary_overall_rank'),
-                        'gameweek_rank': user_team.get('summary_event_rank'),
+                        'name': (entry_data.get('name') if entry_data else None) or user_team.get('name') or team_entry.get('name') or 'My FPL Team',
+                        'player_first_name': (entry_data.get('player_first_name') if entry_data else '') or team_entry.get('player_first_name', '') or user_team.get('player_first_name', ''),
+                        'player_last_name': (entry_data.get('player_last_name') if entry_data else '') or team_entry.get('player_last_name', '') or user_team.get('player_last_name', ''),
+                        'overall_rank': team_entry.get('summary_overall_rank') or entry_history.get('overall_rank'),
+                        'gameweek_rank': team_entry.get('summary_event_rank') or entry_history.get('rank'),
                         'total_points': user_team.get('summary_overall_points'),
                         'gameweek_points': user_team.get('summary_event_points')
                     },

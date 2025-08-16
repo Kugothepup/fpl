@@ -13,13 +13,16 @@ import {
   Alert,
   Avatar,
   Chip,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemAvatar,
   Divider,
   IconButton,
   Collapse,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper,
 } from '@mui/material';
 import { 
   Groups, 
@@ -33,6 +36,7 @@ import { apiService } from '../../services/api';
 
 const MyTeamWidget = () => {
   const [teamData, setTeamData] = useState(null);
+  const [teamPredictions, setTeamPredictions] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(false);
@@ -44,8 +48,21 @@ const MyTeamWidget = () => {
   const loadTeamData = async () => {
     try {
       setLoading(true);
-      const response = await apiService.getUserTeam();
-      setTeamData(response.data);
+      
+      // Load both team data and predictions
+      const [teamResponse, predictionsResponse] = await Promise.allSettled([
+        apiService.getUserTeam(),
+        apiService.getTeamScorePrediction()
+      ]);
+
+      if (teamResponse.status === 'fulfilled') {
+        setTeamData(teamResponse.value.data);
+      }
+
+      if (predictionsResponse.status === 'fulfilled') {
+        setTeamPredictions(predictionsResponse.value.data);
+      }
+
       setError(null);
     } catch (err) {
       setError('Failed to load team data');
@@ -72,6 +89,31 @@ const MyTeamWidget = () => {
   const formatLastUpdated = (dateString) => {
     if (!dateString) return 'Unknown';
     return new Date(dateString).toLocaleString();
+  };
+
+  const getPlayerPrediction = (playerId) => {
+    if (!teamPredictions?.player_predictions) return null;
+    return teamPredictions.player_predictions.find(p => p.player_id === playerId);
+  };
+
+  const getEnhancedPlayerData = () => {
+    if (!teamData?.picks) return [];
+    
+    return teamData.picks.slice(0, 11).map((pick, index) => {
+      const prediction = getPlayerPrediction(pick.element);
+      const actualPoints = pick.total_points || 0;
+      const predictedPoints = prediction?.predicted_points || 0;
+      const difference = predictedPoints - actualPoints;
+      
+      return {
+        ...pick,
+        index: index + 1,
+        prediction,
+        actualPoints,
+        predictedPoints,
+        difference
+      };
+    });
   };
 
   return (
@@ -169,72 +211,115 @@ const MyTeamWidget = () => {
               </Typography>
               
               {teamData.picks && teamData.picks.length > 0 ? (
-                <List dense sx={{ p: 0 }}>
-                  {teamData.picks.slice(0, 11).map((pick, index) => (
-                    <ListItem 
-                      key={pick.element} 
-                      sx={{ 
-                        px: 0, 
-                        py: 0.5,
-                        backgroundColor: pick.is_captain 
-                          ? 'rgba(255, 215, 0, 0.1)' 
-                          : pick.is_vice_captain 
-                          ? 'rgba(192, 192, 192, 0.1)' 
-                          : 'transparent',
-                        borderRadius: 0.5,
-                        border: pick.is_captain ? '1px solid gold' : 'none'
-                      }}
-                    >
-                      <ListItemAvatar>
-                        <Avatar 
+                <TableContainer component={Paper} sx={{ boxShadow: 'none', border: '1px solid #e0e0e0' }}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow sx={{ backgroundColor: '#f5f5f5' }}>
+                        <TableCell sx={{ padding: '8px 4px', fontSize: '0.7rem', fontWeight: 'bold', color: '#333333' }}>#</TableCell>
+                        <TableCell sx={{ padding: '8px 4px', fontSize: '0.7rem', fontWeight: 'bold', color: '#333333' }}>Player</TableCell>
+                        <TableCell align="center" sx={{ padding: '8px 4px', fontSize: '0.7rem', fontWeight: 'bold', color: '#333333' }}>Pred</TableCell>
+                        <TableCell align="center" sx={{ padding: '8px 4px', fontSize: '0.7rem', fontWeight: 'bold', color: '#333333' }}>Actual</TableCell>
+                        <TableCell align="center" sx={{ padding: '8px 4px', fontSize: '0.7rem', fontWeight: 'bold', color: '#333333' }}>Diff</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {getEnhancedPlayerData().map((player) => (
+                        <TableRow 
+                          key={player.element}
                           sx={{ 
-                            width: 28, 
-                            height: 28, 
-                            fontSize: '0.7rem',
-                            bgcolor: getPositionColor(pick.position || mapElementTypeToPosition(pick.element_type)),
-                            color: 'white',
-                            fontWeight: 'bold'
+                            backgroundColor: player.is_captain 
+                              ? 'rgba(255, 215, 0, 0.1)' 
+                              : player.is_vice_captain 
+                              ? 'rgba(192, 192, 192, 0.1)' 
+                              : 'transparent',
+                            border: player.is_captain ? '1px solid gold' : 'none',
+                            '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' }
                           }}
                         >
-                          {index + 1}
-                        </Avatar>
-                      </ListItemAvatar>
-                      
-                      <ListItemText
-                        primary={
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                              {pick.name || `Player ${pick.element}`}
-                            </Typography>
-                            {pick.is_captain && <Star sx={{ fontSize: 12, color: 'gold' }} />}
-                            {pick.is_vice_captain && <Person sx={{ fontSize: 12, color: 'silver' }} />}
-                            <Chip 
-                              label={pick.position || mapElementTypeToPosition(pick.element_type)} 
-                              size="small"
+                          <TableCell sx={{ padding: '6px 4px' }}>
+                            <Avatar 
                               sx={{ 
-                                height: 16, 
-                                fontSize: '0.6rem',
-                                bgcolor: getPositionColor(pick.position || mapElementTypeToPosition(pick.element_type)),
+                                width: 24, 
+                                height: 24, 
+                                fontSize: '0.65rem',
+                                bgcolor: getPositionColor(player.position || mapElementTypeToPosition(player.element_type)),
                                 color: 'white',
                                 fontWeight: 'bold'
                               }}
-                            />
-                          </Box>
-                        }
-                        secondary={
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="caption" color="textSecondary">
-                              {pick.team || 'Unknown Team'}
+                            >
+                              {player.index}
+                            </Avatar>
+                          </TableCell>
+                          <TableCell sx={{ padding: '6px 4px' }}>
+                            <Box>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+                                <Typography variant="body2" sx={{ fontSize: '0.75rem', fontWeight: '500' }}>
+                                  {player.name || `Player ${player.element}`}
+                                </Typography>
+                                {player.is_captain && <Star sx={{ fontSize: 10, color: 'gold' }} />}
+                                {player.is_vice_captain && <Person sx={{ fontSize: 10, color: 'silver' }} />}
+                                <Chip 
+                                  label={player.position || mapElementTypeToPosition(player.element_type)} 
+                                  size="small"
+                                  sx={{ 
+                                    height: 14, 
+                                    fontSize: '0.55rem',
+                                    bgcolor: getPositionColor(player.position || mapElementTypeToPosition(player.element_type)),
+                                    color: 'white',
+                                    fontWeight: 'bold'
+                                  }}
+                                />
+                              </Box>
+                              <Typography variant="caption" color="textSecondary" sx={{ fontSize: '0.65rem' }}>
+                                {player.team || 'Unknown'} • £{player.cost}M
+                              </Typography>
+                            </Box>
+                          </TableCell>
+                          <TableCell align="center" sx={{ padding: '6px 4px' }}>
+                            <Typography 
+                              variant="body2" 
+                              sx={{ 
+                                fontSize: '0.75rem',
+                                fontWeight: '500',
+                                color: player.predictedPoints > 0 ? '#2e7d32' : 'text.secondary'
+                              }}
+                            >
+                              {player.predictedPoints.toFixed(1)}
                             </Typography>
-                            <Typography variant="caption" color="textSecondary">
-                              {pick.is_captain ? 'Captain' : pick.is_vice_captain ? 'Vice Captain' : `£${pick.cost}M`}
+                          </TableCell>
+                          <TableCell align="center" sx={{ padding: '6px 4px' }}>
+                            <Typography 
+                              variant="body2" 
+                              sx={{ 
+                                fontSize: '0.75rem',
+                                fontWeight: '500',
+                                color: player.actualPoints > 0 ? '#1976d2' : 'text.secondary'
+                              }}
+                            >
+                              {player.actualPoints}
                             </Typography>
-                          </Box>
-                        }
-                      />
-                    </ListItem>
-                  ))}
-                </List>
+                          </TableCell>
+                          <TableCell align="center" sx={{ padding: '6px 4px' }}>
+                            <Typography 
+                              variant="body2" 
+                              sx={{ 
+                                fontSize: '0.75rem',
+                                fontWeight: '500',
+                                color: player.difference > 0 
+                                  ? '#2e7d32' 
+                                  : player.difference < 0 
+                                  ? '#d32f2f' 
+                                  : 'text.secondary'
+                              }}
+                            >
+                              {player.difference > 0 ? '+' : ''}{player.difference.toFixed(1)}
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
               ) : (
                 <Alert severity="info" sx={{ fontSize: '0.75rem' }}>
                   No squad data available
