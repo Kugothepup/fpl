@@ -75,15 +75,15 @@ const GameweekScores = () => {
                 <Box 
                   sx={{ 
                     p: 1.5, 
-                    border: '1px solid #e0e0e0', 
+                    border: '2px solid #f57c00', 
                     borderRadius: 1, 
                     mb: 1,
-                    backgroundColor: '#ffffff',
+                    backgroundColor: '#fff3e0',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
                   }}
                 >
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                    <Typography variant="body2" fontWeight="bold" color="text.primary">
+                    <Typography variant="body2" fontWeight="bold" color="#f57c00">
                       {match.home_team} vs {match.away_team}
                     </Typography>
                     <Chip 
@@ -95,13 +95,13 @@ const GameweekScores = () => {
                   </Box>
                   
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Typography variant="caption" color="text.secondary">
-                      <Schedule sx={{ fontSize: 12, mr: 0.5 }} />
+                    <Typography variant="caption" color="#f57c00" sx={{ fontWeight: 'medium' }}>
+                      <Schedule sx={{ fontSize: 12, mr: 0.5, color: '#f57c00' }} />
                       {match.kickoff_time ? new Date(match.kickoff_time).toLocaleString() : 'TBD'}
                     </Typography>
                     
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Typography variant="caption" color="text.primary">
+                      <Typography variant="caption" color="#f57c00" sx={{ fontWeight: 'bold' }}>
                         {(match.confidence * 100).toFixed(0)}%
                       </Typography>
                       <LinearProgress 

@@ -90,18 +90,18 @@ const QuickStats = ({ systemStatus }) => {
   };
 
   const StatCard = ({ title, value, icon, color = 'primary', loading: itemLoading = false }) => (
-    <Card sx={{ height: '100%', background: `linear-gradient(135deg, ${color === 'primary' ? '#1976d2' : color === 'success' ? '#388e3c' : color === 'warning' ? '#f57c00' : '#d32f2f'}22, transparent)` }}>
+    <Card sx={{ height: '100%', backgroundColor: 'background.paper', border: `2px solid ${color === 'primary' ? '#1976d2' : color === 'success' ? '#388e3c' : color === 'warning' ? '#f57c00' : '#d32f2f'}20` }}>
       <CardContent>
         <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
           {icon}
-          <Typography variant="subtitle2" sx={{ ml: 1, color: 'text.secondary' }}>
+          <Typography variant="subtitle2" sx={{ ml: 1, color: 'text.primary', fontWeight: 'medium' }}>
             {title}
           </Typography>
         </Box>
         {itemLoading ? (
           <Skeleton variant="text" height={40} />
         ) : (
-          <Typography variant="h4" component="div" fontWeight="bold">
+          <Typography variant="h4" component="div" fontWeight="bold" color="text.primary">
             {value}
           </Typography>
         )}

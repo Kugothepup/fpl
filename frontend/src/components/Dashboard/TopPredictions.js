@@ -20,7 +20,6 @@ import {
   Skeleton,
 } from '@mui/material';
 import {
-  TrendingUp,
   Refresh as RefreshIcon,
   VisibilityOff,
 } from '@mui/icons-material';
@@ -140,20 +139,22 @@ const TopPredictions = () => {
               <ListItem
                 key={prediction.player_id}
                 sx={{
-                  border: '1px solid',
-                  borderColor: 'divider',
+                  border: '2px solid',
+                  borderColor: index === 0 ? '#d32f2f' : '#e0e0e0',
                   borderRadius: 2,
                   mb: 1,
-                  bgcolor: index === 0 ? 'action.hover' : 'transparent',
+                  bgcolor: index === 0 ? '#ffebee' : '#f9f9f9',
                 }}
               >
                 <ListItemAvatar>
                   <Avatar
                     sx={{
-                      bgcolor: index === 0 ? 'primary.main' : 'secondary.main',
+                      bgcolor: index === 0 ? '#d32f2f' : '#666666',
+                      color: 'white',
                       width: 32,
                       height: 32,
                       fontSize: '0.875rem',
+                      fontWeight: 'bold'
                     }}
                   >
                     {index + 1}
@@ -163,7 +164,7 @@ const TopPredictions = () => {
                 <ListItemText
                   primary={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Typography variant="body2" fontWeight="medium">
+                      <Typography variant="body2" fontWeight="bold" color={index === 0 ? '#d32f2f' : '#333333'}>
                         {prediction.player_name}
                       </Typography>
                       <Chip
@@ -178,7 +179,7 @@ const TopPredictions = () => {
                   secondary={
                     <Box sx={{ mt: 0.5 }}>
                       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography variant="caption" color={index === 0 ? '#d32f2f' : '#666666'} sx={{ fontWeight: 'medium' }}>
                           Confidence: {Math.round(prediction.confidence * 100)}%
                         </Typography>
                         <Typography variant="caption" color="primary.main" fontWeight="bold">

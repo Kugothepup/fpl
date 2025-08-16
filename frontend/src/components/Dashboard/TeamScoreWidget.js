@@ -15,7 +15,7 @@ import {
   Chip,
   LinearProgress,
 } from '@mui/material';
-import { EmojiEvents, Person, Star } from '@mui/icons-material';
+import { EmojiEvents, Star } from '@mui/icons-material';
 import { fetchTeamScore } from '../../services/api';
 
 const TeamScoreWidget = () => {
@@ -44,12 +44,12 @@ const TeamScoreWidget = () => {
 
   const getPositionColor = (position) => {
     const colors = {
-      'GK': '#e3f2fd',
-      'DEF': '#e8f5e8', 
-      'MID': '#fff3e0',
-      'FWD': '#ffebee'
+      'GK': '#1976d2',
+      'DEF': '#2e7d32', 
+      'MID': '#f57c00',
+      'FWD': '#d32f2f'
     };
-    return colors[position] || '#f5f5f5';
+    return colors[position] || '#666666';
   };
 
   return (
@@ -73,15 +73,15 @@ const TeamScoreWidget = () => {
         ) : teamScore && teamInfo ? (
           <>
             {/* Team Info */}
-            <Box sx={{ mb: 2, p: 1, backgroundColor: '#f5f5f5', borderRadius: 1 }}>
-              <Typography variant="subtitle2" fontWeight="bold">
+            <Box sx={{ mb: 2, p: 2, backgroundColor: '#e8f5e8', borderRadius: 1, border: '1px solid #2e7d32' }}>
+              <Typography variant="subtitle2" fontWeight="bold" color="#2e7d32">
                 {teamInfo.name}
               </Typography>
-              <Typography variant="caption" color="textSecondary">
+              <Typography variant="caption" color="#2e7d32" sx={{ fontWeight: 'medium' }}>
                 {teamInfo.player_first_name} {teamInfo.player_last_name}
               </Typography>
               {teamInfo.overall_rank && (
-                <Typography variant="caption" sx={{ ml: 1 }}>
+                <Typography variant="caption" sx={{ ml: 1, color: '#2e7d32', fontWeight: 'medium' }}>
                   • Rank: {teamInfo.overall_rank.toLocaleString()}
                 </Typography>
               )}
@@ -122,12 +122,12 @@ const TeamScoreWidget = () => {
                     borderRadius: 0.5,
                     border: player.is_captain ? '2px solid gold' : 'none'
                   }}>
-                    <Avatar sx={{ width: 24, height: 24, fontSize: '0.7rem' }}>
+                    <Avatar sx={{ width: 24, height: 24, fontSize: '0.7rem', bgcolor: 'white', color: getPositionColor(player.position) }}>
                       {index + 1}
                     </Avatar>
                     
                     <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography variant="caption" sx={{ fontWeight: 500 }}>
+                      <Typography variant="caption" sx={{ fontWeight: 500, color: 'white' }}>
                         {player.player_name}
                         {player.is_captain && <Star sx={{ fontSize: 14, color: 'gold', ml: 0.5 }} />}
                       </Typography>
@@ -135,15 +135,15 @@ const TeamScoreWidget = () => {
                         <Chip 
                           label={player.position} 
                           size="small" 
-                          sx={{ height: 16, fontSize: '0.6rem' }}
+                          sx={{ height: 16, fontSize: '0.6rem', bgcolor: 'white', color: getPositionColor(player.position), fontWeight: 'bold' }}
                         />
                       </Box>
                     </Box>
                     
-                    <Typography variant="caption" fontWeight="bold" color="primary">
+                    <Typography variant="caption" fontWeight="bold" color="white">
                       {player.final_points} pts
                       {player.is_captain && (
-                        <Typography variant="caption" color="textSecondary" sx={{ ml: 0.5 }}>
+                        <Typography variant="caption" color="gold" sx={{ ml: 0.5, fontWeight: 'bold' }}>
                           (C)
                         </Typography>
                       )}

@@ -29,6 +29,7 @@ from core.ml_predictor import FPLMLPredictor, PredictionResult
 from services.weather_service import WeatherService
 from services.news_service import NewsService
 from services.accuracy_tracker import AccuracyTracker, PredictionRecord
+from services.mistral_optimizer import MistralTeamOptimizer, OptimizationConstraints
 
 # Configure logging
 logging.basicConfig(
@@ -49,7 +50,7 @@ def create_app(config_name='default'):
     app.config.from_object(config[config_name])
     
     # Enable CORS for React frontend
-    CORS(app, origins=["http://localhost:3000", "http://127.0.0.1:3000"])
+    CORS(app, origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://10.2.0.2:3000"])
     
     # Initialize services
     try:
@@ -58,6 +59,7 @@ def create_app(config_name='default'):
         weather_service = WeatherService()
         news_service = NewsService()
         accuracy_tracker = AccuracyTracker()
+        mistral_optimizer = MistralTeamOptimizer()
         
         logger.info("All services initialized successfully")
         
@@ -147,18 +149,78 @@ def create_app(config_name='default'):
     
     @app.route('/api/team', methods=['GET'])
     def get_user_team():
-        """Get user's current FPL team"""
+        """Get user's current FPL team with enriched player data"""
         try:
             team_id = request.args.get('team_id', Config.FPL_TEAM_ID)
             
+            # Get raw team data
             team_data = fpl_manager.fetch_user_team(team_id)
-            
             if not team_data:
                 return jsonify({'error': 'Failed to fetch team data'}), 500
             
+            # Get bootstrap data for player/team lookups
+            bootstrap_data = fpl_manager.fetch_bootstrap_data()
+            if not bootstrap_data:
+                return jsonify({'error': 'Failed to fetch player data'}), 500
+            
+            # Create lookup dictionaries
+            players_lookup = {p['id']: p for p in bootstrap_data.get('elements', [])}
+            teams_lookup = {t['id']: t['name'] for t in bootstrap_data.get('teams', [])}
+            
+            # Enrich the picks with player and team information
+            enriched_picks = []
+            for pick in team_data.get('picks', []):
+                player_id = pick['element']
+                player_data = players_lookup.get(player_id, {})
+                
+                if player_data:
+                    pos_map = {1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}
+                    enriched_pick = {
+                        **pick,
+                        'player_id': player_id,
+                        'name': player_data.get('web_name', f'Player {player_id}'),
+                        'full_name': f"{player_data.get('first_name', '')} {player_data.get('second_name', '')}".strip(),
+                        'team': teams_lookup.get(player_data.get('team'), 'Unknown'),
+                        'team_id': player_data.get('team'),
+                        'position': pos_map.get(player_data.get('element_type'), 'UNK'),
+                        'cost': player_data.get('now_cost', 0) / 10.0,
+                        'total_points': player_data.get('total_points', 0),
+                        'form': float(player_data.get('form', 0)) if player_data.get('form') else 0,
+                        'points_per_game': float(player_data.get('points_per_game', 0)) if player_data.get('points_per_game') else 0
+                    }
+                    enriched_picks.append(enriched_pick)
+                else:
+                    # Fallback for missing player data
+                    enriched_picks.append({
+                        **pick,
+                        'player_id': player_id,
+                        'name': f'Player {player_id}',
+                        'full_name': f'Player {player_id}',
+                        'team': 'Unknown',
+                        'position': 'UNK',
+                        'cost': 0,
+                        'total_points': 0
+                    })
+            
+            # Get team entry data for team name and player info
+            entry_data = None
+            try:
+                entry_response = fpl_manager.session.get(f"{fpl_manager.base_url}/entry/{team_id}/", timeout=30)
+                if entry_response.status_code == 200:
+                    entry_data = entry_response.json()
+            except:
+                pass  # Entry data is optional
+            
+            # Return enriched team data
+            enriched_team_data = {
+                **team_data,
+                'picks': enriched_picks,
+                'entry': entry_data  # Add entry information for team name, player name, etc.
+            }
+            
             return jsonify({
                 'success': True,
-                'data': team_data,
+                'data': enriched_team_data,
                 'timestamp': datetime.now().isoformat()
             })
             
@@ -220,6 +282,11 @@ def create_app(config_name='default'):
                 return jsonify({'error': 'Failed to fetch FPL data'}), 500
             
             players_data = fpl_data.get('elements', [])
+            teams_data = fpl_data.get('teams', [])
+            
+            # Create team lookup
+            team_lookup = {team['id']: team['name'] for team in teams_data}
+            
             players = []
             
             for player_data in players_data:
@@ -238,7 +305,7 @@ def create_app(config_name='default'):
                         'id': player.id,
                         'name': player.name,
                         'position': player.position,
-                        'team': player.team,
+                        'team': team_lookup.get(player_data.get('team'), 'Unknown'),
                         'cost': player.cost,
                         'total_points': player.total_points,
                         'points_per_game': player.points_per_game,
@@ -768,6 +835,7 @@ def create_app(config_name='default'):
             data = request.get_json()
             budget = data.get('budget', 100.0)
             formation = data.get('formation', '3-4-3')
+            preferred_strategy = data.get('strategy', 'budget_maximizing')
             constraints = data.get('constraints', {})
             
             # Formation requirements
@@ -789,6 +857,10 @@ def create_app(config_name='default'):
                 return jsonify({'error': 'Failed to fetch FPL data'}), 500
                 
             players_data = fpl_data.get('elements', [])
+            teams_data = fpl_data.get('teams', [])
+            
+            # Create team lookup for names
+            team_lookup = {team['id']: team['name'] for team in teams_data}
             
             # Get ML predictions for all players
             predictions = ml_predictor.predict_next_gameweek_points(players_data)
@@ -810,7 +882,8 @@ def create_app(config_name='default'):
                         'name': player['web_name'],
                         'full_name': f"{player['first_name']} {player['second_name']}",
                         'position': position,
-                        'team': player['team'],
+                        'team': team_lookup.get(player['team'], f"Team {player['team']}"),
+                        'team_id': player['team'],
                         'cost': player['now_cost'] / 10.0,
                         'predicted_points': pred.predicted_points,
                         'confidence': pred.confidence,
@@ -820,58 +893,146 @@ def create_app(config_name='default'):
                         'selected_by_percent': float(player['selected_by_percent']) if player['selected_by_percent'] else 0
                     }
             
-            # Simple greedy optimization algorithm
-            optimized_team = []
-            remaining_budget = budget
-            position_counts = {'GK': 0, 'DEF': 0, 'MID': 0, 'FWD': 0}
-            
-            # Sort players by value efficiency (predicted points per cost)
-            sorted_players = sorted(
-                player_lookup.values(),
-                key=lambda x: (x['predicted_points'] / max(x['cost'], 0.1)) * x['confidence'],
-                reverse=True
-            )
-            
-            # Fill each position according to formation
-            for position, required_count in formation_req.items():
-                position_players = [p for p in sorted_players if p['position'] == position]
+            # Advanced budget-optimized ML algorithm
+            def optimize_team_with_budget(player_lookup, formation_req, budget):
+                """Optimize team to maximize predicted points within budget constraint"""
                 
-                for player in position_players:
-                    if (position_counts[position] < required_count and 
-                        player['cost'] <= remaining_budget and
-                        len(optimized_team) < 15 and
-                        player['id'] not in [p['id'] for p in optimized_team]):
-                        
-                        optimized_team.append(player)
-                        remaining_budget -= player['cost']
-                        position_counts[position] += 1
-                        
-                        if position_counts[position] >= required_count:
-                            break
-            
-            # Fill remaining positions if under 15 players
-            remaining_positions = []
-            for pos, count in position_counts.items():
-                max_allowed = {'GK': 2, 'DEF': 5, 'MID': 5, 'FWD': 3}[pos]
-                for _ in range(min(max_allowed - count, 15 - len(optimized_team))):
-                    remaining_positions.append(pos)
-            
-            for position in remaining_positions:
-                position_players = [p for p in sorted_players 
-                                 if p['position'] == position and 
-                                 p['id'] not in [p['id'] for p in optimized_team]]
+                # Group players by position
+                players_by_position = {
+                    'GK': [p for p in player_lookup.values() if p['position'] == 'GK'],
+                    'DEF': [p for p in player_lookup.values() if p['position'] == 'DEF'],
+                    'MID': [p for p in player_lookup.values() if p['position'] == 'MID'],
+                    'FWD': [p for p in player_lookup.values() if p['position'] == 'FWD']
+                }
                 
-                for player in position_players:
-                    if (player['cost'] <= remaining_budget and 
-                        len(optimized_team) < 15):
-                        optimized_team.append(player)
-                        remaining_budget -= player['cost']
-                        break
+                # Sort by predicted points (weighted by confidence) for each position
+                for position in players_by_position:
+                    players_by_position[position].sort(
+                        key=lambda x: x['predicted_points'] * x['confidence'], 
+                        reverse=True
+                    )
+                
+                def optimize_with_strategy(strategy):
+                    """Optimize team using a specific strategy"""
+                    team = []
+                    remaining_budget = budget
+                    position_counts = {'GK': 0, 'DEF': 0, 'MID': 0, 'FWD': 0}
+                    
+                    # Fill required positions first
+                    positions_order = ['GK', 'DEF', 'MID', 'FWD']
+                    
+                    for position in positions_order:
+                        required = formation_req[position]
+                        available_players = [p for p in players_by_position[position] 
+                                           if p['id'] not in [t['id'] for t in team]]
+                        
+                        # Sort players based on strategy
+                        if strategy == 'maximize_points':
+                            available_players.sort(key=lambda x: x['predicted_points'] * x['confidence'], reverse=True)
+                        elif strategy == 'value_efficiency':
+                            available_players.sort(key=lambda x: (x['predicted_points'] * x['confidence']) / max(x['cost'], 0.1), reverse=True)
+                        elif strategy == 'balanced':
+                            available_players.sort(key=lambda x: (x['predicted_points'] * x['confidence'] * 0.7) + ((budget - x['cost']) * 0.3), reverse=True)
+                        elif strategy == 'budget_maximizing':
+                            available_players.sort(key=lambda x: (x['predicted_points'] * x['confidence']) + (x['cost'] * 0.2), reverse=True)
+                        
+                        # Calculate reserved budget for remaining positions
+                        remaining_positions = sum(max(0, formation_req[pos] - position_counts[pos]) for pos in positions_order)
+                        remaining_other_positions = remaining_positions - (required - position_counts[position])
+                        reserved_budget = remaining_other_positions * 4.0
+                        
+                        # Fill this position
+                        for player in available_players:
+                            if (position_counts[position] < required and
+                                player['cost'] <= remaining_budget - reserved_budget and
+                                len(team) < 15):
+                                
+                                team.append(player)
+                                remaining_budget -= player['cost']
+                                position_counts[position] += 1
+                                
+                                if position_counts[position] >= required:
+                                    break
+                    
+                    # Fill bench positions (up to 15 total players)
+                    max_positions = {'GK': 2, 'DEF': 5, 'MID': 5, 'FWD': 3}
+                    
+                    all_remaining_players = []
+                    for pos in positions_order:
+                        if position_counts[pos] < max_positions[pos]:
+                            available = [p for p in players_by_position[pos] 
+                                       if p['id'] not in [t['id'] for t in team]]
+                            for player in available[:max_positions[pos] - position_counts[pos]]:
+                                all_remaining_players.append((player, pos))
+                    
+                    # Sort remaining players by strategy
+                    if strategy == 'budget_maximizing':
+                        all_remaining_players.sort(
+                            key=lambda x: x[0]['predicted_points'] * x[0]['confidence'] if x[0]['cost'] <= remaining_budget else -1,
+                            reverse=True
+                        )
+                    else:
+                        all_remaining_players.sort(
+                            key=lambda x: (x[0]['predicted_points'] * x[0]['confidence']) / max(x[0]['cost'], 0.1),
+                            reverse=True
+                        )
+                    
+                    for player, pos in all_remaining_players:
+                        if (len(team) < 15 and 
+                            player['cost'] <= remaining_budget and
+                            position_counts[pos] < max_positions[pos]):
+                            
+                            team.append(player)
+                            remaining_budget -= player['cost']
+                            position_counts[pos] += 1
+                    
+                    return team, remaining_budget
+                
+                best_team = None
+                best_score = -1
+                best_remaining_budget = 0
+                best_strategy = None
+                
+                # Try multiple optimization strategies, prioritizing the preferred one
+                strategies = [preferred_strategy, 'maximize_points', 'value_efficiency', 'balanced', 'budget_maximizing']
+                # Remove duplicates while preserving order
+                strategies = list(dict.fromkeys(strategies))
+                
+                for i, strategy in enumerate(strategies):
+                    team, remaining_budget = optimize_with_strategy(strategy)
+                    
+                    if team:
+                        team_score = sum(p['predicted_points'] * p['confidence'] for p in team)
+                        team_cost = sum(p['cost'] for p in team)
+                        
+                        # Apply strategy-specific bonuses
+                        if strategy == preferred_strategy and i == 0:
+                            team_score *= 1.15  # Bonus for preferred strategy
+                        elif strategy == 'budget_maximizing':
+                            budget_utilization = team_cost / budget
+                            if budget_utilization >= 0.95:  # Use at least 95% of budget
+                                team_score *= 1.1  # Bonus for good budget usage
+                        
+                        if team_score > best_score and team_cost <= budget:
+                            best_team = team
+                            best_score = team_score
+                            best_remaining_budget = remaining_budget
+                            best_strategy = strategy
+                
+                return best_team if best_team else [], best_remaining_budget, best_strategy
+            
+            # Run the optimization
+            optimized_team, remaining_budget, best_strategy = optimize_team_with_budget(player_lookup, formation_req, budget)
             
             # Calculate team statistics
             total_predicted_points = sum(p['predicted_points'] for p in optimized_team)
             total_cost = sum(p['cost'] for p in optimized_team)
             avg_confidence = sum(p['confidence'] for p in optimized_team) / len(optimized_team) if optimized_team else 0
+            
+            # Calculate position counts for the final team
+            position_counts = {'GK': 0, 'DEF': 0, 'MID': 0, 'FWD': 0}
+            for player in optimized_team:
+                position_counts[player['position']] += 1
             
             # Suggest captain (highest predicted points)
             captain = max(optimized_team, key=lambda x: x['predicted_points']) if optimized_team else None
@@ -881,19 +1042,124 @@ def create_app(config_name='default'):
                 'data': {
                     'team': optimized_team,
                     'formation': formation,
+                    'strategy_used': best_strategy or preferred_strategy,
                     'total_cost': round(total_cost, 1),
                     'remaining_budget': round(remaining_budget, 1),
                     'total_predicted_points': round(total_predicted_points, 1),
                     'avg_confidence': round(avg_confidence, 2),
                     'suggested_captain': captain,
                     'position_counts': position_counts,
-                    'is_valid': len(optimized_team) == 15 and remaining_budget >= 0
+                    'is_valid': len(optimized_team) == 15 and total_cost <= budget
                 },
                 'timestamp': datetime.now().isoformat()
             })
             
         except Exception as e:
             logger.error(f"Wildcard optimization failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/wildcard/optimize-mistral', methods=['POST'])
+    def optimize_wildcard_team_mistral():
+        """Optimize wildcard team using Mistral AI with blackboard technique"""
+        try:
+            if not mistral_optimizer.is_available():
+                return jsonify({
+                    'error': 'Mistral AI not configured. Please set MISTRAL_API_KEY environment variable.',
+                    'fallback_available': True
+                }), 400
+                
+            data = request.get_json()
+            budget = data.get('budget', 100.0)
+            formation = data.get('formation', '3-4-3')
+            risk_tolerance = data.get('risk_tolerance', 'balanced')
+            constraints = data.get('constraints', {})
+            
+            # Create optimization constraints
+            opt_constraints = OptimizationConstraints(
+                budget=budget,
+                formation=formation,
+                risk_tolerance=risk_tolerance
+            )
+            
+            # Get FPL data and predictions
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            if not fpl_data:
+                return jsonify({'error': 'Failed to fetch FPL data'}), 500
+                
+            players_data = fpl_data.get('elements', [])
+            teams_data = fpl_data.get('teams', [])
+            team_lookup = {team['id']: team['name'] for team in teams_data}
+            
+            # Get ML predictions for all players
+            predictions = ml_predictor.predict_next_gameweek_points(players_data)
+            if not predictions:
+                return jsonify({'error': 'No ML predictions available'}), 500
+            
+            # Create enhanced player data with predictions
+            enhanced_players = []
+            for player in players_data:
+                pred = next((p for p in predictions if p.player_id == player['id']), None)
+                if pred:
+                    pos_map = {1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}
+                    position = pos_map.get(player['element_type'], 'MID')
+                    
+                    enhanced_players.append({
+                        'id': player['id'],
+                        'name': player['web_name'],
+                        'full_name': f"{player['first_name']} {player['second_name']}",
+                        'position': position,
+                        'team': team_lookup.get(player['team'], f"Team {player['team']}"),
+                        'team_id': player['team'],
+                        'cost': player['now_cost'] / 10.0,
+                        'predicted_points': pred.predicted_points,
+                        'confidence': pred.confidence,
+                        'total_points': player['total_points'],
+                        'points_per_game': float(player['points_per_game']) if player['points_per_game'] else 0,
+                        'form': float(player['form']) if player['form'] else 0,
+                        'selected_by_percent': float(player['selected_by_percent']) if player['selected_by_percent'] else 0,
+                        'news': player.get('news', ''),
+                        'minutes': player.get('minutes', 0)
+                    })
+            
+            # Convert predictions to dict for easy lookup
+            ml_predictions = {
+                pred.player_id: {
+                    'predicted_points': pred.predicted_points,
+                    'confidence': pred.confidence
+                } for pred in predictions
+            }
+            
+            # Run Mistral optimization
+            optimization_result = mistral_optimizer.optimize_team_with_mistral(
+                enhanced_players, ml_predictions, opt_constraints
+            )
+            
+            if optimization_result.get('success'):
+                # Get blackboard summary
+                blackboard_summary = mistral_optimizer.get_blackboard_summary()
+                
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'mistral_strategy': optimization_result.get('strategy', {}),
+                        'blackboard_summary': blackboard_summary,
+                        'agents_consulted': optimization_result.get('agents_consulted', []),
+                        'optimization_method': 'mistral_blackboard',
+                        'constraints': {
+                            'budget': budget,
+                            'formation': formation,
+                            'risk_tolerance': risk_tolerance
+                        }
+                    },
+                    'timestamp': datetime.now().isoformat()
+                })
+            else:
+                return jsonify({
+                    'error': optimization_result.get('error', 'Mistral optimization failed')
+                }), 500
+                
+        except Exception as e:
+            logger.error(f"Mistral wildcard optimization failed: {e}")
             return jsonify({'error': str(e)}), 500
     
     return app

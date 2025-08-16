@@ -27,12 +27,13 @@ import {
   MenuItem,
   TextField,
   Divider,
+  Switch,
+  FormControlLabel,
 } from '@mui/material';
 import {
   ArrowBack,
   AutoAwesome,
   Calculate,
-  TrendingUp,
   Warning,
   CheckCircle,
 } from '@mui/icons-material';
@@ -49,8 +50,12 @@ const Wildcard = () => {
   const [selectedPlayers, setSelectedPlayers] = useState([]);
   const [budget, setBudget] = useState(100.0);
   const [formation, setFormation] = useState('3-4-3');
+  const [optimizationStrategy, setOptimizationStrategy] = useState('budget_maximizing');
+  const [riskTolerance, setRiskTolerance] = useState('balanced');
+  const [useMistral, setUseMistral] = useState(false);
   const [error, setError] = useState(null);
   const [calculations, setCalculations] = useState(null);
+  const [mistralResults, setMistralResults] = useState(null);
 
   // Formation requirements
   const formations = {
@@ -139,19 +144,36 @@ const Wildcard = () => {
       setLoading(true);
       setError(null);
       
-      const response = await fetch('/api/wildcard/optimize', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      let response;
+      
+      if (useMistral) {
+        // Use Mistral AI optimization
+        response = await apiService.optimizeWithMistral({
           budget: budget,
           formation: formation,
+          risk_tolerance: riskTolerance,
           constraints: {}
-        })
-      });
+        });
+        
+        if (response.success) {
+          setMistralResults(response.data);
+          setError(null);
+          setLoading(false);
+          return; // Don't process as regular team optimization
+        } else {
+          throw new Error(response.error || 'Mistral optimization failed');
+        }
+      } else {
+        // Use regular ML optimization
+        response = await apiService.optimizeWildcardTeam({
+          budget: budget,
+          formation: formation,
+          strategy: optimizationStrategy,
+          constraints: {}
+        });
+      }
       
-      const data = await response.json();
+      const data = response;
       
       if (data.success) {
         // Map the optimized team to our player format
@@ -175,6 +197,7 @@ const Wildcard = () => {
           totalPredictedPoints: data.data.total_predicted_points,
           avgConfidence: data.data.avg_confidence,
           suggestedCaptain: data.data.suggested_captain,
+          strategyUsed: data.data.strategy_used,
           isValid: data.data.is_valid
         });
         
@@ -231,7 +254,7 @@ const Wildcard = () => {
                   sx={{ mb: 2 }}
                 />
                 
-                <FormControl fullWidth>
+                <FormControl fullWidth sx={{ mb: 2 }}>
                   <InputLabel>Formation</InputLabel>
                   <Select
                     value={formation}
@@ -243,6 +266,48 @@ const Wildcard = () => {
                     ))}
                   </Select>
                 </FormControl>
+                
+                {!useMistral ? (
+                  <FormControl fullWidth>
+                    <InputLabel>Optimization Strategy</InputLabel>
+                    <Select
+                      value={optimizationStrategy}
+                      label="Optimization Strategy"
+                      onChange={(e) => setOptimizationStrategy(e.target.value)}
+                    >
+                      <MenuItem value="maximize_points">🎯 Max Points</MenuItem>
+                      <MenuItem value="budget_maximizing">💰 Use Full Budget</MenuItem>
+                      <MenuItem value="value_efficiency">📊 Best Value</MenuItem>
+                      <MenuItem value="balanced">⚖️ Balanced</MenuItem>
+                    </Select>
+                  </FormControl>
+                ) : (
+                  <FormControl fullWidth>
+                    <InputLabel>Risk Tolerance</InputLabel>
+                    <Select
+                      value={riskTolerance}
+                      label="Risk Tolerance"
+                      onChange={(e) => setRiskTolerance(e.target.value)}
+                    >
+                      <MenuItem value="conservative">🛡️ Conservative</MenuItem>
+                      <MenuItem value="balanced">⚖️ Balanced</MenuItem>
+                      <MenuItem value="aggressive">🚀 Aggressive</MenuItem>
+                    </Select>
+                  </FormControl>
+                )}
+              </Box>
+
+              <Box sx={{ mb: 2 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={useMistral}
+                      onChange={(e) => setUseMistral(e.target.checked)}
+                      color="primary"
+                    />
+                  }
+                  label="🧠 Use Mistral AI (Advanced)"
+                />
               </Box>
 
               <Box sx={{ mb: 3 }}>
@@ -269,7 +334,12 @@ const Wildcard = () => {
                   disabled={loading}
                   sx={{ mb: 1 }}
                 >
-                  Optimize with ML
+                  {loading ? 'Optimizing...' : 
+                    useMistral ? '🧠 Analyze with Mistral AI' :
+                    optimizationStrategy === 'maximize_points' ? 'Optimize for Max Points' :
+                    optimizationStrategy === 'budget_maximizing' ? 'Use Full Budget' :
+                    optimizationStrategy === 'value_efficiency' ? 'Find Best Value' :
+                    'Balanced Optimization'}
                 </Button>
                 <Button
                   variant="outlined"
@@ -349,6 +419,38 @@ const Wildcard = () => {
                 </Typography>
               </Box>
 
+              {calculations && (
+                <>
+                  <Divider sx={{ my: 2 }} />
+                  <Box sx={{ mb: 1 }}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      ML Optimization Results
+                    </Typography>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                      <Typography variant="body2">Strategy Used</Typography>
+                      <Typography variant="body2" fontWeight="bold">
+                        {calculations.strategyUsed === 'maximize_points' ? '🎯 Max Points' :
+                         calculations.strategyUsed === 'budget_maximizing' ? '💰 Full Budget' :
+                         calculations.strategyUsed === 'value_efficiency' ? '📊 Best Value' :
+                         '⚖️ Balanced'}
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                      <Typography variant="body2">Predicted Points</Typography>
+                      <Typography variant="body2" fontWeight="bold" color="primary">
+                        {calculations.totalPredictedPoints}
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                      <Typography variant="body2">ML Confidence</Typography>
+                      <Typography variant="body2" fontWeight="bold">
+                        {(calculations.avgConfidence * 100).toFixed(0)}%
+                      </Typography>
+                    </Box>
+                  </Box>
+                </>
+              )}
+
               {/* Validation Status */}
               <Box>
                 <Typography variant="subtitle2" gutterBottom>
@@ -383,6 +485,60 @@ const Wildcard = () => {
             <Alert severity="info" sx={{ mb: 2 }}>
               {error}
             </Alert>
+          )}
+
+          {/* Mistral AI Results */}
+          {mistralResults && (
+            <Card sx={{ mb: 3 }}>
+              <CardContent>
+                <Typography variant="h6" gutterBottom>
+                  🧠 Mistral AI Analysis Results
+                </Typography>
+                
+                {mistralResults.mistral_strategy && (
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Strategy Summary
+                    </Typography>
+                    <Typography variant="body2" sx={{ mb: 1 }}>
+                      <strong>Overall Strategy:</strong> {mistralResults.mistral_strategy.overall_strategy_summary || 'Advanced AI analysis completed'}
+                    </Typography>
+                  </Box>
+                )}
+
+                {mistralResults.blackboard_summary && (
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      AI Agents Consulted ({mistralResults.blackboard_summary.total_entries} insights)
+                    </Typography>
+                    {mistralResults.agents_consulted?.map((agent, index) => (
+                      <Chip
+                        key={index}
+                        label={agent.replace('_', ' ').toUpperCase()}
+                        size="small"
+                        variant="outlined"
+                        sx={{ mr: 0.5, mb: 0.5 }}
+                      />
+                    ))}
+                  </Box>
+                )}
+
+                {mistralResults.mistral_strategy?.position_priorities && (
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Position Recommendations
+                    </Typography>
+                    <Typography variant="body2">
+                      {JSON.stringify(mistralResults.mistral_strategy.position_priorities, null, 2)}
+                    </Typography>
+                  </Box>
+                )}
+
+                <Alert severity="info">
+                  This is strategic analysis from Mistral AI. For actual team selection, use the regular optimization or manually select players based on these insights.
+                </Alert>
+              </CardContent>
+            </Card>
           )}
 
           {/* Selected Team */}

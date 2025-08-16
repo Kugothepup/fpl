@@ -10,7 +10,7 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://10.2.0.2:5000/api'
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 300000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -140,6 +140,18 @@ export const apiService = {
   // Model Training
   async trainModels() {
     const response = await api.post('/train-models');
+    return response.data;
+  },
+
+  // Wildcard optimization
+  async optimizeWildcardTeam(config) {
+    const response = await api.post('/wildcard/optimize', config);
+    return response.data;
+  },
+
+  // Mistral AI optimization
+  async optimizeWithMistral(config) {
+    const response = await api.post('/wildcard/optimize-mistral', config);
     return response.data;
   },
 

@@ -26,7 +26,6 @@ import {
   Star, 
   ExpandMore, 
   ExpandLess, 
-  EmojiEvents,
   Person,
   Schedule
 } from '@mui/icons-material';
@@ -57,12 +56,12 @@ const MyTeamWidget = () => {
 
   const getPositionColor = (position) => {
     const colors = {
-      'GK': '#e3f2fd',
-      'DEF': '#e8f5e8', 
-      'MID': '#fff3e0',
-      'FWD': '#ffebee'
+      'GK': '#1976d2',
+      'DEF': '#2e7d32', 
+      'MID': '#f57c00',
+      'FWD': '#d32f2f'
     };
-    return colors[position] || '#f5f5f5';
+    return colors[position] || '#666666';
   };
 
   const mapElementTypeToPosition = (elementType) => {
@@ -82,7 +81,7 @@ const MyTeamWidget = () => {
           <Box sx={{ display: 'flex', alignItems: 'center' }}>
             <Groups sx={{ mr: 1 }} />
             <Typography variant="h6" component="div">
-              My FPL Team
+              My FPL Team 
             </Typography>
           </Box>
           <IconButton
@@ -104,16 +103,16 @@ const MyTeamWidget = () => {
         ) : teamData ? (
           <>
             {/* Team Header */}
-            <Box sx={{ mb: 2, p: 1, backgroundColor: '#f5f5f5', borderRadius: 1 }}>
-              <Typography variant="subtitle1" fontWeight="bold">
-                {teamData.name || 'My Team'}
+            <Box sx={{ mb: 2, p: 2, backgroundColor: '#e3f2fd', borderRadius: 1, border: '1px solid #1976d2' }}>
+              <Typography variant="subtitle1" fontWeight="bold" color="#1976d2">
+                {teamData.entry?.name || 'My Team'}
               </Typography>
-              <Typography variant="caption" color="textSecondary">
-                {teamData.player_first_name} {teamData.player_last_name}
+              <Typography variant="caption" color="#1976d2" sx={{ fontWeight: 'medium' }}>
+                {teamData.entry?.player_first_name} {teamData.entry?.player_last_name}
               </Typography>
-              {teamData.last_deadline_bank && (
-                <Typography variant="caption" sx={{ ml: 1 }}>
-                  • £{(teamData.last_deadline_bank / 10).toFixed(1)}M in bank
+              {teamData.entry_history?.bank && (
+                <Typography variant="caption" sx={{ ml: 1, color: '#1976d2', fontWeight: 'medium' }}>
+                  • £{(teamData.entry_history.bank / 10).toFixed(1)}M in bank
                 </Typography>
               )}
             </Box>
@@ -125,7 +124,7 @@ const MyTeamWidget = () => {
                   Total Points
                 </Typography>
                 <Typography variant="body1" fontWeight="bold">
-                  {teamData.summary_overall_points || 0}
+                  {teamData.entry_history?.total_points || 0}
                 </Typography>
               </Grid>
               <Grid item xs={6}>
@@ -133,7 +132,7 @@ const MyTeamWidget = () => {
                   Overall Rank
                 </Typography>
                 <Typography variant="body1" fontWeight="bold">
-                  {teamData.summary_overall_rank?.toLocaleString() || 'N/A'}
+                  {teamData.entry_history?.overall_rank?.toLocaleString() || 'N/A'}
                 </Typography>
               </Grid>
               <Grid item xs={6}>
@@ -141,7 +140,7 @@ const MyTeamWidget = () => {
                   GW Points
                 </Typography>
                 <Typography variant="body1" fontWeight="bold">
-                  {teamData.summary_event_points || 0}
+                  {teamData.entry_history?.points || 0}
                 </Typography>
               </Grid>
               <Grid item xs={6}>
@@ -149,7 +148,7 @@ const MyTeamWidget = () => {
                   GW Rank
                 </Typography>
                 <Typography variant="body1" fontWeight="bold">
-                  {teamData.summary_event_rank?.toLocaleString() || 'N/A'}
+                  {teamData.entry_history?.rank?.toLocaleString() || 'N/A'}
                 </Typography>
               </Grid>
             </Grid>
@@ -192,7 +191,9 @@ const MyTeamWidget = () => {
                             width: 28, 
                             height: 28, 
                             fontSize: '0.7rem',
-                            bgcolor: getPositionColor(mapElementTypeToPosition(pick.element_type))
+                            bgcolor: getPositionColor(pick.position || mapElementTypeToPosition(pick.element_type)),
+                            color: 'white',
+                            fontWeight: 'bold'
                           }}
                         >
                           {index + 1}
@@ -203,25 +204,32 @@ const MyTeamWidget = () => {
                         primary={
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                             <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                              Player {pick.element}
+                              {pick.name || `Player ${pick.element}`}
                             </Typography>
                             {pick.is_captain && <Star sx={{ fontSize: 12, color: 'gold' }} />}
                             {pick.is_vice_captain && <Person sx={{ fontSize: 12, color: 'silver' }} />}
                             <Chip 
-                              label={mapElementTypeToPosition(pick.element_type)} 
+                              label={pick.position || mapElementTypeToPosition(pick.element_type)} 
                               size="small"
                               sx={{ 
                                 height: 16, 
                                 fontSize: '0.6rem',
-                                bgcolor: getPositionColor(mapElementTypeToPosition(pick.element_type))
+                                bgcolor: getPositionColor(pick.position || mapElementTypeToPosition(pick.element_type)),
+                                color: 'white',
+                                fontWeight: 'bold'
                               }}
                             />
                           </Box>
                         }
                         secondary={
-                          <Typography variant="caption" color="textSecondary">
-                            {pick.is_captain ? 'Captain' : pick.is_vice_captain ? 'Vice Captain' : `Multiplier: ${pick.multiplier}`}
-                          </Typography>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Typography variant="caption" color="textSecondary">
+                              {pick.team || 'Unknown Team'}
+                            </Typography>
+                            <Typography variant="caption" color="textSecondary">
+                              {pick.is_captain ? 'Captain' : pick.is_vice_captain ? 'Vice Captain' : `£${pick.cost}M`}
+                            </Typography>
+                          </Box>
                         }
                       />
                     </ListItem>
