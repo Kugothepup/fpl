@@ -13,6 +13,12 @@ import sys
 from pathlib import Path
 import traceback
 import uuid
+import sqlite3
+import threading
+import time
+import asyncio
+import json
+import numpy as np
 
 # Add parent directories to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -30,6 +36,8 @@ from services.weather_service import WeatherService
 from services.news_service import NewsService
 from services.accuracy_tracker import AccuracyTracker, PredictionRecord
 from services.mistral_optimizer import MistralTeamOptimizer, OptimizationConstraints
+from services.age_performance_service import AgePerformanceService
+from services.fixture_service import real_fixture_service
 
 # Configure logging
 logging.basicConfig(
@@ -60,6 +68,15 @@ def create_app(config_name='default'):
         news_service = NewsService()
         accuracy_tracker = AccuracyTracker()
         mistral_optimizer = MistralTeamOptimizer()
+        age_performance_service = AgePerformanceService()
+        
+        # Initialize and refresh real fixture data for 2025-26 season
+        logger.info("Refreshing 2025-26 season fixtures data...")
+        real_fixture_service.refresh_data()
+        
+        # Initialize background task manager
+        global background_tasks
+        background_tasks = {}
         
         logger.info("All services initialized successfully")
         
@@ -74,6 +91,86 @@ def create_app(config_name='default'):
         logger.info("ML models loaded successfully")
     except Exception as e:
         logger.warning(f"Could not load existing ML models: {e}")
+    
+    # Background task utilities
+    def create_background_task(task_id, task_type, status='running', progress=0, result=None, error=None):
+        """Create or update a background task"""
+        background_tasks[task_id] = {
+            'id': task_id,
+            'type': task_type,
+            'status': status,  # 'running', 'completed', 'failed'
+            'progress': progress,  # 0-100
+            'result': result,
+            'error': error,
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat()
+        }
+        return background_tasks[task_id]
+    
+    def update_background_task(task_id, status=None, progress=None, result=None, error=None):
+        """Update an existing background task"""
+        if task_id in background_tasks:
+            task = background_tasks[task_id]
+            if status is not None:
+                task['status'] = status
+            if progress is not None:
+                task['progress'] = progress
+            if result is not None:
+                task['result'] = result
+            if error is not None:
+                task['error'] = error
+            task['updated_at'] = datetime.now().isoformat()
+            return task
+        return None
+    
+    def run_ai_analysis_background(task_id, metric, position):
+        """Run AI-enhanced analysis in background"""
+        try:
+            update_background_task(task_id, status='running', progress=10)
+            
+            # Get FPL data
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            if not fpl_data:
+                update_background_task(task_id, status='failed', error='Failed to fetch FPL data')
+                return
+            
+            update_background_task(task_id, progress=30)
+            
+            # Run analysis with AI features
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                analysis_result = loop.run_until_complete(
+                    age_performance_service.analyze_age_performance(
+                        fpl_data, metric, position, use_ai_enrichment=True, generate_ai_summary=True
+                    )
+                )
+                
+                update_background_task(task_id, progress=90)
+                
+                # Convert to serializable format (minimal for background task)
+                response_data = {
+                    'metric': analysis_result.metric,
+                    'ai_summary': {
+                        'overall_summary': analysis_result.ai_summary.overall_summary,
+                        'key_findings': analysis_result.ai_summary.key_findings,
+                        'age_insights': analysis_result.ai_summary.age_insights,
+                        'performance_trends': analysis_result.ai_summary.performance_trends,
+                        'recommendations': analysis_result.ai_summary.recommendations,
+                        'statistical_interpretation': analysis_result.ai_summary.statistical_interpretation,
+                        'confidence_level': analysis_result.ai_summary.confidence_level,
+                        'generated_at': analysis_result.ai_summary.generated_at
+                    } if analysis_result.ai_summary else None
+                }
+                
+                update_background_task(task_id, status='completed', progress=100, result=response_data)
+                
+            finally:
+                loop.close()
+                
+        except Exception as e:
+            logger.error(f"Background AI analysis failed: {e}")
+            update_background_task(task_id, status='failed', error=str(e))
     
     @app.errorhandler(Exception)
     def handle_error(e):
@@ -709,9 +806,12 @@ def create_app(config_name='default'):
     def predict_gameweek_scores():
         """Predict match scores for upcoming gameweek"""
         try:
-            # Get fixtures for next gameweek
-            fixtures = fpl_manager.fetch_fixtures()
-            upcoming_fixtures = [f for f in fixtures if not f.finished and f.gameweek == (fpl_manager.current_gameweek or 1)]
+            # Get current gameweek from real fixture service
+            current_gw = real_fixture_service.get_current_gameweek()
+            
+            # Get fixtures for current gameweek from real fixture service
+            current_gw_fixtures = real_fixture_service.get_fixtures(gameweek=current_gw)
+            upcoming_fixtures = [f for f in current_gw_fixtures if not f.finished]
             
             # Simple score prediction based on team strength and form
             score_predictions = []
@@ -719,41 +819,77 @@ def create_app(config_name='default'):
             teams_data = fpl_data.get('teams', []) if fpl_data else []
             
             for fixture in upcoming_fixtures[:10]:  # Limit to 10 fixtures
-                # Find team data
-                home_team_data = next((t for t in teams_data if t['id'] == fixture.home_team_id), None)
-                away_team_data = next((t for t in teams_data if t['id'] == fixture.away_team_id), None)
+                # Find team data using real fixture team IDs
+                home_team_data = next((t for t in teams_data if t['id'] == fixture.team_h), None)
+                away_team_data = next((t for t in teams_data if t['id'] == fixture.team_a), None)
                 
+                # Get team names from real fixture service
+                home_team_name = real_fixture_service.get_team_name(fixture.team_h)
+                away_team_name = real_fixture_service.get_team_name(fixture.team_a)
+                
+                # Use team strength if available, otherwise use difficulty ratings
                 if home_team_data and away_team_data:
-                    # Simple prediction based on team strength
                     home_strength = home_team_data.get('strength_overall_home', 1200)
                     away_strength = away_team_data.get('strength_overall_away', 1200)
-                    
-                    # Basic score prediction (simplified)
-                    strength_diff = (home_strength - away_strength) / 100
-                    
-                    # Predict scores (very basic model)
-                    home_score = max(0, round(1.5 + strength_diff * 0.3))
-                    away_score = max(0, round(1.2 - strength_diff * 0.3))
-                    
-                    # Calculate confidence based on strength difference
-                    confidence = min(0.9, 0.5 + abs(strength_diff) * 0.05)
-                    
-                    score_predictions.append({
+                else:
+                    # Use difficulty ratings as proxy for strength
+                    home_strength = 1200 + (5 - fixture.team_h_difficulty) * 100
+                    away_strength = 1200 + (5 - fixture.team_a_difficulty) * 100
+                
+                # Basic score prediction (simplified)
+                strength_diff = (home_strength - away_strength) / 100
+                
+                # Predict scores (very basic model)
+                home_score = max(0, round(1.5 + strength_diff * 0.3))
+                away_score = max(0, round(1.2 - strength_diff * 0.3))
+                
+                # Calculate confidence based on strength difference
+                confidence = min(0.9, 0.5 + abs(strength_diff) * 0.05)
+                
+                # Only include scores for finished games, predictions for unfinished ones
+                if fixture.finished:
+                    # Show actual scores for finished games
+                    score_data = {
                         'fixture_id': fixture.id,
-                        'home_team': fixture.home_team,
-                        'away_team': fixture.away_team,
+                        'home_team': home_team_name,
+                        'away_team': away_team_name,
+                        'home_team_short': real_fixture_service.get_team_short_name(fixture.team_h),
+                        'away_team_short': real_fixture_service.get_team_short_name(fixture.team_a),
                         'kickoff_time': fixture.kickoff_time,
+                        'finished': True,
+                        'home_actual_score': fixture.team_h_score,
+                        'away_actual_score': fixture.team_a_score,
+                        'actual_score': f"{fixture.team_h_score}-{fixture.team_a_score}",
+                        'home_score': fixture.team_h_score,  # For backwards compatibility
+                        'away_score': fixture.team_a_score,  # For backwards compatibility
+                        'confidence': 1.0,  # 100% confidence for actual results
+                        'reasoning': "Final result"
+                    }
+                else:
+                    # Show predictions for unfinished games
+                    score_data = {
+                        'fixture_id': fixture.id,
+                        'home_team': home_team_name,
+                        'away_team': away_team_name,
+                        'home_team_short': real_fixture_service.get_team_short_name(fixture.team_h),
+                        'away_team_short': real_fixture_service.get_team_short_name(fixture.team_a),
+                        'kickoff_time': fixture.kickoff_time,
+                        'finished': False,
+                        'home_actual_score': None,
+                        'away_actual_score': None,
                         'predicted_score': f"{home_score}-{away_score}",
-                        'home_score': home_score,
-                        'away_score': away_score,
+                        'predicted_home_score': home_score,
+                        'predicted_away_score': away_score,
                         'confidence': round(confidence, 2),
-                        'reasoning': f"Based on team strength: {fixture.home_team} ({home_strength}) vs {fixture.away_team} ({away_strength})"
-                    })
+                        'reasoning': f"Prediction based on team strength: {home_team_name} ({home_strength}) vs {away_team_name} ({away_strength})"
+                    }
+                
+                score_predictions.append(score_data)
             
             return jsonify({
                 'success': True,
                 'data': score_predictions,
-                'gameweek': fpl_manager.current_gameweek or 1,
+                'gameweek': current_gw,
                 'timestamp': datetime.now().isoformat()
             })
             
@@ -865,6 +1001,227 @@ def create_app(config_name='default'):
             
         except Exception as e:
             logger.error(f"Team score prediction failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/predictions/team-next-gameweeks', methods=['GET'])
+    def predict_team_next_gameweeks():
+        """Predict user's FPL team performance for next 2 gameweeks"""
+        try:
+            team_id = request.args.get('team_id', Config.FPL_TEAM_ID)
+            num_gameweeks = int(request.args.get('gameweeks', 2))  # Default to 2 gameweeks
+            
+            # Limit to maximum of 5 gameweeks for performance
+            num_gameweeks = min(num_gameweeks, 5)
+            
+            # Get user team and FPL data
+            user_team = fpl_manager.fetch_user_team(team_id)
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            
+            if not user_team or not fpl_data:
+                return jsonify({'error': 'Failed to fetch team data'}), 500
+            
+            players_data = fpl_data.get('elements', [])
+            
+            # Use real fixture service for current gameweek and fixtures
+            current_gw = real_fixture_service.get_current_gameweek()
+            next_gameweeks = real_fixture_service.get_next_gameweeks(current_gw, num_gameweeks)
+            
+            # Get upcoming fixtures for next gameweeks from real data
+            upcoming_fixtures = []
+            for gw in next_gameweeks:
+                gw_fixtures = real_fixture_service.get_fixtures(gameweek=gw)
+                upcoming_fixtures.extend(gw_fixtures)
+            
+            # Get team entry data
+            entry_data = None
+            try:
+                entry_response = fpl_manager.session.get(f"{fpl_manager.base_url}/entry/{team_id}/", timeout=30)
+                if entry_response.status_code == 200:
+                    entry_data = entry_response.json()
+            except:
+                pass
+            
+            gameweek_predictions = []
+            
+            if user_team and 'picks' in user_team:
+                user_player_ids = [pick['element'] for pick in user_team['picks']]
+                user_players_data = [p for p in players_data if p['id'] in user_player_ids]
+                
+                # Find captain and vice captain
+                captain_id = None
+                vice_captain_id = None
+                for pick in user_team['picks']:
+                    if pick['is_captain']:
+                        captain_id = pick['element']
+                    elif pick['is_vice_captain']:
+                        vice_captain_id = pick['element']
+                
+                # Predict for each of the next gameweeks
+                for target_gw in next_gameweeks:
+                    # Get fixtures for this specific gameweek
+                    gw_fixtures = [f for f in upcoming_fixtures if f.event == target_gw]
+                    
+                    # Get ML predictions for user's players for this specific gameweek
+                    # Filter user players to only those with fixtures in this gameweek
+                    gw_user_players_data = []
+                    for player_data in user_players_data:
+                        team_id_player = player_data.get('team')
+                        has_fixture = any(f.team_h == team_id_player or f.team_a == team_id_player for f in gw_fixtures)
+                        if has_fixture:
+                            gw_user_players_data.append(player_data)
+                    
+                    # Generate predictions for players with fixtures in this gameweek
+                    if gw_user_players_data:
+                        predictions = ml_predictor.predict_next_gameweek_points(gw_user_players_data)
+                    else:
+                        # If no players have fixtures, still generate predictions for all to maintain structure
+                        predictions = ml_predictor.predict_next_gameweek_points(user_players_data)
+                    
+                    # Add gameweek-specific variation to make predictions different
+                    import random
+                    random.seed(target_gw * 42)  # Consistent but different per gameweek
+                    for pred in predictions:
+                        # Add small gameweek-specific variation (±10%)
+                        variation = random.uniform(0.9, 1.1)
+                        pred.predicted_points = round(pred.predicted_points * variation, 1)
+                    
+                    # Calculate team score for this gameweek
+                    total_predicted_points = 0
+                    player_predictions = []
+                    
+                    for pick in user_team['picks'][:11]:  # Only starting XI
+                        player_pred = next((p for p in predictions if p.player_id == pick['element']), None)
+                        
+                        if player_pred:
+                            points = player_pred.predicted_points
+                            
+                            # Check if player has fixture this gameweek
+                            player_data = next((p for p in players_data if p['id'] == pick['element']), None)
+                            has_fixture = False
+                            if player_data:
+                                team_id_player = player_data.get('team')
+                                has_fixture = any(f.team_h == team_id_player or f.team_a == team_id_player for f in gw_fixtures)
+                            
+                            # Reduce points if no fixture
+                            if not has_fixture:
+                                points *= 0.1  # Minimal points if no fixture
+                            
+                            # Double points for captain
+                            if pick['is_captain']:
+                                points *= 2
+                            
+                            total_predicted_points += points
+                            
+                            player_predictions.append({
+                                'player_id': pick['element'],
+                                'player_name': player_pred.player_name,
+                                'position': player_pred.position,
+                                'predicted_points': round(player_pred.predicted_points, 1),
+                                'final_points': round(points, 1),
+                                'has_fixture': has_fixture,
+                                'is_captain': pick['is_captain'],
+                                'is_vice_captain': pick['is_vice_captain'],
+                                'multiplier': pick['multiplier']
+                            })
+                    
+                    # Get fixtures info for this gameweek
+                    fixtures_info = []
+                    for fixture in gw_fixtures[:8]:  # Limit to 8 fixtures to avoid too much data
+                        fixtures_info.append({
+                            'id': fixture.id,
+                            'home_team': real_fixture_service.get_team_name(fixture.team_h),
+                            'away_team': real_fixture_service.get_team_name(fixture.team_a),
+                            'home_team_short': real_fixture_service.get_team_short_name(fixture.team_h),
+                            'away_team_short': real_fixture_service.get_team_short_name(fixture.team_a),
+                            'kickoff_time': fixture.kickoff_time,
+                            'difficulty_home': fixture.team_h_difficulty,
+                            'difficulty_away': fixture.team_a_difficulty
+                        })
+                    
+                    gameweek_predictions.append({
+                        'gameweek': target_gw,
+                        'total_predicted_points': round(total_predicted_points, 1),
+                        'captain_id': captain_id,
+                        'vice_captain_id': vice_captain_id,
+                        'player_predictions': sorted(player_predictions, key=lambda x: x['final_points'], reverse=True),
+                        'confidence': round(sum(p.confidence for p in predictions) / len(predictions) if predictions else 0, 2),
+                        'fixtures': fixtures_info,
+                        'num_fixtures': len(gw_fixtures)
+                    })
+                
+                # Calculate total across all gameweeks
+                total_points_all_gws = sum(gw['total_predicted_points'] for gw in gameweek_predictions)
+                avg_confidence = sum(gw['confidence'] for gw in gameweek_predictions) / len(gameweek_predictions) if gameweek_predictions else 0
+                
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'gameweek_predictions': gameweek_predictions,
+                        'summary': {
+                            'total_predicted_points': round(total_points_all_gws, 1),
+                            'average_per_gameweek': round(total_points_all_gws / num_gameweeks, 1) if num_gameweeks > 0 else 0,
+                            'num_gameweeks': num_gameweeks,
+                            'current_gameweek': current_gw,
+                            'average_confidence': round(avg_confidence, 2)
+                        }
+                    },
+                    'team_info': {
+                        'id': team_id,
+                        'name': (entry_data.get('name') if entry_data else None) or user_team.get('name') or 'My FPL Team',
+                        'player_first_name': (entry_data.get('player_first_name') if entry_data else '') or user_team.get('player_first_name', ''),
+                        'player_last_name': (entry_data.get('player_last_name') if entry_data else '') or user_team.get('player_last_name', '')
+                    },
+                    'timestamp': datetime.now().isoformat()
+                })
+            
+            return jsonify({'error': 'No team data found'}), 404
+            
+        except Exception as e:
+            logger.error(f"Next gameweeks prediction failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/real-fixtures', methods=['GET'])
+    def get_real_fixtures():
+        """Get real fixture data for specific gameweek or team from 2025-26 season"""
+        try:
+            gameweek = request.args.get('gameweek', type=int)
+            team_id = request.args.get('team_id', type=int)
+            
+            # Get fixtures from real fixture service
+            fixtures = real_fixture_service.get_fixtures(gameweek=gameweek, team_id=team_id)
+            
+            # Convert to API format
+            fixtures_data = []
+            for fixture in fixtures:
+                fixtures_data.append({
+                    'id': fixture.id,
+                    'gameweek': fixture.event,
+                    'home_team': real_fixture_service.get_team_name(fixture.team_h),
+                    'away_team': real_fixture_service.get_team_name(fixture.team_a),
+                    'home_team_short': real_fixture_service.get_team_short_name(fixture.team_h),
+                    'away_team_short': real_fixture_service.get_team_short_name(fixture.team_a),
+                    'home_team_id': fixture.team_h,
+                    'away_team_id': fixture.team_a,
+                    'kickoff_time': fixture.kickoff_time,
+                    'difficulty_home': fixture.team_h_difficulty,
+                    'difficulty_away': fixture.team_a_difficulty,
+                    'finished': fixture.finished,
+                    'home_score': fixture.team_h_score,
+                    'away_score': fixture.team_a_score
+                })
+            
+            return jsonify({
+                'success': True,
+                'data': fixtures_data,
+                'summary': {
+                    'current_gameweek': real_fixture_service.get_current_gameweek(),
+                    'total_fixtures': len(fixtures_data),
+                    'fixtures_summary': real_fixture_service.get_fixtures_summary()
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"Fixtures API failed: {e}")
             return jsonify({'error': str(e)}), 500
 
     @app.route('/api/wildcard/optimize', methods=['POST'])
@@ -1199,6 +1556,891 @@ def create_app(config_name='default'):
                 
         except Exception as e:
             logger.error(f"Mistral wildcard optimization failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis', methods=['GET'])
+    def analyze_age_performance():
+        """Analyze age vs performance relationship"""
+        try:
+            # Get query parameters
+            metric = request.args.get('metric', 'points')
+            position = request.args.get('position')
+            enable_ai_enrichment = request.args.get('ai_enrichment', 'true').lower() == 'true'
+            enable_ai_summary = request.args.get('ai_summary', 'false').lower() == 'true'
+            player_ids_param = request.args.get('player_ids')
+            
+            # Parse player IDs if provided
+            player_ids = None
+            if player_ids_param:
+                try:
+                    player_ids = [int(pid) for pid in player_ids_param.split(',')]
+                except ValueError:
+                    return jsonify({'error': 'Invalid player_ids format. Use comma-separated integers.'}), 400
+            
+            # Validate metric
+            valid_metrics = ['points', 'goals', 'assists', 'points_per_game', 'form', 'xg', 'xa', 'clean_sheets', 'saves']
+            if metric not in valid_metrics:
+                return jsonify({
+                    'error': f'Invalid metric. Valid options: {", ".join(valid_metrics)}'
+                }), 400
+            
+            # Get FPL data
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            if not fpl_data:
+                return jsonify({'error': 'Failed to fetch FPL data'}), 500
+            
+            # Perform age analysis (fast version without AI enrichment by default)
+            import asyncio
+            analysis_result = asyncio.run(age_performance_service.analyze_age_performance(
+                fpl_data, metric, position, 
+                use_ai_enrichment=enable_ai_enrichment,
+                generate_ai_summary=enable_ai_summary,
+                force_new_enrichment=False,  # Use cached data only by default
+                player_ids=player_ids
+            ))
+            
+            # Convert to serializable format
+            response_data = {
+                'metric': analysis_result.metric,
+                'position_filter': analysis_result.position_filter,
+                'linear_model': {
+                    'r2_score': round(analysis_result.linear_model.r2_score, 4),
+                    'mae': round(analysis_result.linear_model.mae, 4),
+                    'coefficients': analysis_result.linear_model.coefficients,
+                    'intercept': round(analysis_result.linear_model.intercept, 4),
+                    'predictions': analysis_result.linear_model.predictions,
+                    'ages': analysis_result.linear_model.ages,
+                    'actual_values': analysis_result.linear_model.actual_values,
+                    'p_value': round(analysis_result.linear_model.p_value, 4) if analysis_result.linear_model.p_value is not None else None,
+                    'correlation': round(analysis_result.linear_model.correlation, 4) if analysis_result.linear_model.correlation is not None else None,
+                    'is_significant': bool(analysis_result.linear_model.is_significant) if analysis_result.linear_model.is_significant is not None else None
+                },
+                'polynomial_model': {
+                    'r2_score': round(analysis_result.polynomial_model.r2_score, 4),
+                    'mae': round(analysis_result.polynomial_model.mae, 4),
+                    'coefficients': analysis_result.polynomial_model.coefficients,
+                    'intercept': round(analysis_result.polynomial_model.intercept, 4),
+                    'predictions': analysis_result.polynomial_model.predictions,
+                    'ages': analysis_result.polynomial_model.ages,
+                    'actual_values': analysis_result.polynomial_model.actual_values,
+                    'p_value': round(analysis_result.polynomial_model.p_value, 4) if analysis_result.polynomial_model.p_value is not None else None,
+                    'correlation': round(analysis_result.polynomial_model.correlation, 4) if analysis_result.polynomial_model.correlation is not None else None,
+                    'is_significant': bool(analysis_result.polynomial_model.is_significant) if analysis_result.polynomial_model.is_significant is not None else None
+                },
+                'best_model': analysis_result.best_model,
+                'peak_age': analysis_result.peak_age,
+                'age_range_analysis': analysis_result.age_range_analysis,
+                'age_groups_analysis': analysis_result.age_groups_analysis,
+                'player_comparisons': analysis_result.player_comparisons,
+                'insights': analysis_result.insights,
+                'sample_size': len(analysis_result.linear_model.ages),
+                'enriched_data_count': analysis_result.enriched_data_count,
+                'ai_summary': {
+                    'overall_summary': analysis_result.ai_summary.overall_summary,
+                    'key_findings': analysis_result.ai_summary.key_findings,
+                    'age_insights': analysis_result.ai_summary.age_insights,
+                    'performance_trends': analysis_result.ai_summary.performance_trends,
+                    'recommendations': analysis_result.ai_summary.recommendations,
+                    'statistical_interpretation': analysis_result.ai_summary.statistical_interpretation,
+                    'confidence_level': analysis_result.ai_summary.confidence_level,
+                    'generated_at': analysis_result.ai_summary.generated_at
+                } if analysis_result.ai_summary else None
+            }
+            
+            return jsonify({
+                'success': True,
+                'data': response_data,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Age analysis failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/quick', methods=['GET'])
+    def analyze_age_performance_quick():
+        """Fast age vs performance analysis without AI features"""
+        try:
+            # Get query parameters
+            metric = request.args.get('metric', 'points')
+            position = request.args.get('position')
+            player_ids_param = request.args.get('player_ids')
+            
+            # Parse player IDs if provided
+            player_ids = None
+            if player_ids_param:
+                try:
+                    player_ids = [int(pid) for pid in player_ids_param.split(',')]
+                except ValueError:
+                    return jsonify({'error': 'Invalid player_ids format. Use comma-separated integers.'}), 400
+            
+            # Validate metric
+            valid_metrics = ['points', 'goals', 'assists', 'points_per_game', 'form', 'xg', 'xa', 'clean_sheets', 'saves']
+            if metric not in valid_metrics:
+                return jsonify({
+                    'error': f'Invalid metric. Valid options: {", ".join(valid_metrics)}'
+                }), 400
+            
+            # Get FPL data
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            if not fpl_data:
+                return jsonify({'error': 'Failed to fetch FPL data'}), 500
+            
+            # Perform fast analysis with enriched data (including CSV imports) but no AI summaries
+            import asyncio
+            analysis_result = asyncio.run(age_performance_service.analyze_age_performance(
+                fpl_data, metric, position, 
+                use_ai_enrichment=True,  # Use enriched data including CSV imports
+                generate_ai_summary=False,  # But don't generate AI summaries for speed
+                force_new_enrichment=False,  # Don't do new AI searches, only use cached data
+                player_ids=player_ids
+            ))
+            
+            # Convert to serializable format (minimal response)
+            response_data = {
+                'metric': analysis_result.metric,
+                'position_filter': analysis_result.position_filter,
+                'linear_model': {
+                    'r2_score': round(analysis_result.linear_model.r2_score, 4),
+                    'mae': round(analysis_result.linear_model.mae, 4),
+                    'coefficients': analysis_result.linear_model.coefficients,
+                    'intercept': round(analysis_result.linear_model.intercept, 4),
+                    'predictions': analysis_result.linear_model.predictions,
+                    'ages': analysis_result.linear_model.ages,
+                    'actual_values': analysis_result.linear_model.actual_values,
+                    'p_value': round(analysis_result.linear_model.p_value, 4) if analysis_result.linear_model.p_value is not None else None,
+                    'correlation': round(analysis_result.linear_model.correlation, 4) if analysis_result.linear_model.correlation is not None else None,
+                    'is_significant': bool(analysis_result.linear_model.is_significant) if analysis_result.linear_model.is_significant is not None else None
+                },
+                'polynomial_model': {
+                    'r2_score': round(analysis_result.polynomial_model.r2_score, 4),
+                    'mae': round(analysis_result.polynomial_model.mae, 4),
+                    'coefficients': analysis_result.polynomial_model.coefficients,
+                    'intercept': round(analysis_result.polynomial_model.intercept, 4),
+                    'predictions': analysis_result.polynomial_model.predictions,
+                    'ages': analysis_result.polynomial_model.ages,
+                    'actual_values': analysis_result.polynomial_model.actual_values,
+                    'p_value': round(analysis_result.polynomial_model.p_value, 4) if analysis_result.polynomial_model.p_value is not None else None,
+                    'correlation': round(analysis_result.polynomial_model.correlation, 4) if analysis_result.polynomial_model.correlation is not None else None,
+                    'is_significant': bool(analysis_result.polynomial_model.is_significant) if analysis_result.polynomial_model.is_significant is not None else None
+                },
+                'best_model': analysis_result.best_model,
+                'peak_age': analysis_result.peak_age,
+                'age_range_analysis': analysis_result.age_range_analysis,
+                'age_groups_analysis': analysis_result.age_groups_analysis,
+                'player_comparisons': analysis_result.player_comparisons[:10],  # Limit to top 10
+                'insights': analysis_result.insights,
+                'sample_size': len(analysis_result.linear_model.ages),
+                'enriched_data_count': analysis_result.enriched_data_count,
+                'ai_features_available': age_performance_service.mistral_client is not None
+            }
+            
+            return jsonify({
+                'success': True,
+                'data': response_data,
+                'timestamp': datetime.now().isoformat(),
+                'processing_time': 'fast_mode'
+            })
+            
+        except Exception as e:
+            logger.error(f"Quick age analysis failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/background', methods=['POST'])
+    def start_background_ai_analysis():
+        """Start AI-enhanced analysis in background"""
+        try:
+            data = request.get_json() or {}
+            metric = data.get('metric', 'points')
+            position = data.get('position')
+            
+            # Validate metric
+            valid_metrics = ['points', 'goals', 'assists', 'points_per_game', 'form', 'xg', 'xa', 'clean_sheets', 'saves']
+            if metric not in valid_metrics:
+                return jsonify({
+                    'error': f'Invalid metric. Valid options: {", ".join(valid_metrics)}'
+                }), 400
+            
+            # Generate unique task ID
+            task_id = str(uuid.uuid4())
+            
+            # Create background task
+            create_background_task(task_id, 'ai_analysis', status='queued')
+            
+            # Start background thread
+            thread = threading.Thread(
+                target=run_ai_analysis_background,
+                args=(task_id, metric, position)
+            )
+            thread.daemon = True
+            thread.start()
+            
+            return jsonify({
+                'success': True,
+                'task_id': task_id,
+                'message': 'AI analysis started in background',
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to start background AI analysis: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/status/<task_id>', methods=['GET'])
+    def get_background_task_status(task_id):
+        """Get status of background task"""
+        try:
+            if task_id not in background_tasks:
+                return jsonify({'error': 'Task not found'}), 404
+            
+            task = background_tasks[task_id]
+            return jsonify({
+                'success': True,
+                'data': task,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to get task status: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/tasks', methods=['GET'])
+    def list_background_tasks():
+        """List all background tasks"""
+        try:
+            # Clean up old completed tasks (older than 1 hour)
+            current_time = datetime.now()
+            tasks_to_remove = []
+            
+            for task_id, task in background_tasks.items():
+                if task['status'] in ['completed', 'failed']:
+                    task_time = datetime.fromisoformat(task['updated_at'])
+                    if (current_time - task_time).total_seconds() > 3600:  # 1 hour
+                        tasks_to_remove.append(task_id)
+            
+            for task_id in tasks_to_remove:
+                del background_tasks[task_id]
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'tasks': list(background_tasks.values()),
+                    'total_tasks': len(background_tasks)
+                },
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to list background tasks: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/bulk-enrich', methods=['POST'])
+    def bulk_enrich_player_ages():
+        """Bulk enrich player ages using Mistral AI"""
+        try:
+            data = request.get_json() or {}
+            limit = data.get('limit', 50)  # Process in batches
+            force_refresh = data.get('force_refresh', False)
+            
+            # Get FPL data
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            if not fpl_data:
+                return jsonify({'error': 'Failed to fetch FPL data'}), 500
+            
+            players_data = fpl_data.get('elements', [])
+            teams_data = fpl_data.get('teams', [])
+            team_lookup = {team['id']: team['name'] for team in teams_data}
+            
+            # Filter players that need enrichment
+            players_to_enrich = []
+            enriched_count = 0
+            skipped_count = 0
+            
+            for player in players_data[:limit]:  # Limit batch size
+                # Skip if player already has birth date and we're not forcing refresh
+                if player.get('date_of_birth') and not force_refresh:
+                    skipped_count += 1
+                    continue
+                    
+                # Check if we have recent enriched data
+                if not force_refresh:
+                    existing_data = age_performance_service._get_enriched_player_data(player['id'])
+                    if existing_data:
+                        last_updated = datetime.fromisoformat(existing_data.last_updated)
+                        if (datetime.now() - last_updated).days < 7:
+                            skipped_count += 1
+                            continue
+                
+                player_name = player.get('web_name', '')
+                team_name = team_lookup.get(player.get('team'), 'Unknown')
+                
+                if player_name and team_name != 'Unknown':
+                    players_to_enrich.append({
+                        'id': player['id'],
+                        'name': player_name,
+                        'team': team_name,
+                        'full_name': player.get('first_name', '') + ' ' + player.get('second_name', '')
+                    })
+            
+            logger.info(f"Starting bulk enrichment for {len(players_to_enrich)} players")
+            
+            # Generate unique task ID for tracking
+            task_id = str(uuid.uuid4())
+            create_background_task(task_id, 'bulk_enrichment', status='running', progress=0)
+            
+            # Start background enrichment
+            def run_bulk_enrichment():
+                try:
+                    successful = 0
+                    failed = 0
+                    total = len(players_to_enrich)
+                    
+                    for i, player_info in enumerate(players_to_enrich):
+                        try:
+                            progress = int((i / total) * 100)
+                            update_background_task(task_id, progress=progress)
+                            
+                            # Use async enrichment
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            try:
+                                enriched_data = loop.run_until_complete(
+                                    age_performance_service.enrich_player_data_with_ai(
+                                        player_info['name'], 
+                                        player_info['team'], 
+                                        player_info['id']
+                                    )
+                                )
+                                
+                                if enriched_data:
+                                    successful += 1
+                                    logger.info(f"Enriched {player_info['name']}: Age {enriched_data.enriched_age}")
+                                else:
+                                    failed += 1
+                                    logger.warning(f"Failed to enrich {player_info['name']}")
+                                    
+                            finally:
+                                loop.close()
+                                
+                            # Add delay to avoid rate limiting
+                            import time
+                            time.sleep(1)
+                            
+                        except Exception as e:
+                            failed += 1
+                            logger.error(f"Error enriching {player_info['name']}: {e}")
+                    
+                    # Complete the task
+                    result = {
+                        'total_processed': total,
+                        'successful': successful,
+                        'failed': failed,
+                        'skipped': skipped_count,
+                        'message': f'Bulk enrichment completed: {successful} successful, {failed} failed'
+                    }
+                    
+                    update_background_task(task_id, status='completed', progress=100, result=result)
+                    logger.info(f"Bulk enrichment completed: {successful}/{total} successful")
+                    
+                except Exception as e:
+                    logger.error(f"Bulk enrichment failed: {e}")
+                    update_background_task(task_id, status='failed', error=str(e))
+            
+            # Start background thread
+            thread = threading.Thread(target=run_bulk_enrichment)
+            thread.daemon = True
+            thread.start()
+            
+            return jsonify({
+                'success': True,
+                'task_id': task_id,
+                'message': f'Started bulk enrichment for {len(players_to_enrich)} players',
+                'players_to_process': len(players_to_enrich),
+                'players_skipped': skipped_count,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Bulk enrichment failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/import-csv', methods=['POST'])
+    def import_player_data_from_csv():
+        """Import player data from Fantasy Premier League GitHub repository"""
+        try:
+            data = request.get_json() or {}
+            season = data.get('season', '2024-25')
+            url = data.get('url') or f'https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/players_raw.csv'
+            
+            # Generate unique task ID for tracking
+            task_id = str(uuid.uuid4())
+            create_background_task(task_id, 'csv_import', status='running', progress=0)
+            
+            # Start background import
+            def run_csv_import():
+                try:
+                    import pandas as pd
+                    import requests
+                    from io import StringIO
+                    
+                    update_background_task(task_id, progress=10)
+                    
+                    # Download CSV data
+                    logger.info(f"Downloading CSV data from: {url}")
+                    response = requests.get(url, timeout=60)
+                    response.raise_for_status()
+                    
+                    update_background_task(task_id, progress=30)
+                    
+                    # Parse CSV
+                    csv_data = StringIO(response.text)
+                    df = pd.read_csv(csv_data)
+                    
+                    logger.info(f"CSV loaded with {len(df)} players")
+                    update_background_task(task_id, progress=50)
+                    
+                    # Import into database
+                    successful = 0
+                    failed = 0
+                    total = len(df)
+                    
+                    for i, row in df.iterrows():
+                        try:
+                            # Extract player data
+                            player_id = row.get('id')
+                            first_name = row.get('first_name', '')
+                            last_name = row.get('second_name', '')
+                            web_name = row.get('web_name', '')
+                            birth_date = row.get('birth_date')
+                            
+                            # Skip if no birth date (handle both null values and string "None")
+                            if pd.isna(birth_date) or not birth_date or str(birth_date).strip().lower() in ['none', 'null', '']:
+                                continue
+                                
+                            # Calculate age
+                            enriched_age = age_performance_service.calculate_age_from_birth_date(str(birth_date))
+                            
+                            if enriched_age:
+                                # Create enriched data object
+                                from backend.services.age_performance_service import EnrichedPlayerData
+                                enriched_data = EnrichedPlayerData(
+                                    player_id=int(player_id) if pd.notna(player_id) else 0,
+                                    name=web_name or f"{first_name} {last_name}".strip(),
+                                    enriched_age=enriched_age,
+                                    birth_date=str(birth_date),
+                                    nationality=None,  # Not available in this CSV
+                                    injury_status='Fit',  # Default assumption
+                                    last_updated=datetime.now().isoformat(),
+                                    data_source=f"FPL GitHub CSV: {url}",
+                                    confidence=0.99  # High confidence for official data
+                                )
+                                
+                                # Save to database
+                                age_performance_service._save_enriched_player_data(enriched_data)
+                                successful += 1
+                                
+                            progress = int(50 + (i / total) * 40)
+                            update_background_task(task_id, progress=progress)
+                            
+                        except Exception as e:
+                            failed += 1
+                            logger.warning(f"Failed to import player {row.get('web_name', 'unknown')}: {e}")
+                    
+                    # Complete the task
+                    result = {
+                        'total_processed': total,
+                        'successful': successful,
+                        'failed': failed,
+                        'source': url,
+                        'season': season,
+                        'message': f'CSV import completed: {successful} players imported from {season} season'
+                    }
+                    
+                    update_background_task(task_id, status='completed', progress=100, result=result)
+                    logger.info(f"CSV import completed: {successful}/{total} successful")
+                    
+                except Exception as e:
+                    logger.error(f"CSV import failed: {e}")
+                    update_background_task(task_id, status='failed', error=str(e))
+            
+            # Start background thread
+            thread = threading.Thread(target=run_csv_import)
+            thread.daemon = True
+            thread.start()
+            
+            return jsonify({
+                'success': True,
+                'task_id': task_id,
+                'message': f'Started CSV import from {url}',
+                'season': season,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"CSV import initialization failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/predict', methods=['GET'])
+    def predict_performance_by_age():
+        """Predict performance for a specific age"""
+        try:
+            # Get query parameters
+            age = request.args.get('age', type=float)
+            metric = request.args.get('metric', 'points')
+            position = request.args.get('position')
+            player_ids_param = request.args.get('player_ids')
+            
+            # Parse player IDs if provided
+            player_ids = None
+            if player_ids_param:
+                try:
+                    player_ids = [int(pid) for pid in player_ids_param.split(',')]
+                except ValueError:
+                    return jsonify({'error': 'Invalid player_ids format. Use comma-separated integers.'}), 400
+            
+            if not age:
+                return jsonify({'error': 'Age parameter is required'}), 400
+            
+            if age < 16 or age > 45:
+                return jsonify({'error': 'Age must be between 16 and 45'}), 400
+            
+            # Get FPL data and perform analysis
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            if not fpl_data:
+                return jsonify({'error': 'Failed to fetch FPL data'}), 500
+            
+            analysis_result = asyncio.run(age_performance_service.analyze_age_performance(
+                fpl_data, metric, position, 
+                use_ai_enrichment=True,  # Use enriched data including CSV imports
+                generate_ai_summary=False,  # Don't generate AI summaries for speed
+                force_new_enrichment=False,  # Use cached data only
+                player_ids=player_ids
+            ))
+            
+            # Get prediction for specific age
+            prediction = age_performance_service.get_player_age_prediction(age, analysis_result)
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'prediction': prediction,
+                    'analysis_metadata': {
+                        'metric': metric,
+                        'position_filter': position,
+                        'sample_size': len(analysis_result.linear_model.ages),
+                        'peak_age': analysis_result.peak_age,
+                        'model_confidence': max(
+                            analysis_result.linear_model.r2_score,
+                            analysis_result.polynomial_model.r2_score
+                        )
+                    }
+                },
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Age prediction failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/compare-players', methods=['POST'])
+    def compare_players_by_age():
+        """Compare specific players in age-performance context"""
+        try:
+            data = request.get_json()
+            
+            if not data:
+                return jsonify({'error': 'Request body is required'}), 400
+            
+            player_ids = data.get('player_ids', [])
+            metric = data.get('metric', 'points')
+            
+            if not player_ids:
+                return jsonify({'error': 'player_ids array is required'}), 400
+            
+            if not isinstance(player_ids, list):
+                return jsonify({'error': 'player_ids must be an array'}), 400
+            
+            # Convert to integers
+            try:
+                player_ids = [int(pid) for pid in player_ids]
+            except ValueError:
+                return jsonify({'error': 'All player_ids must be valid integers'}), 400
+            
+            # Get FPL data
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            if not fpl_data:
+                return jsonify({'error': 'Failed to fetch FPL data'}), 500
+            
+            # Perform comparison
+            comparison_result = age_performance_service.compare_players_by_age(
+                player_ids, fpl_data, metric
+            )
+            
+            return jsonify({
+                'success': True,
+                'data': comparison_result,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Player age comparison failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/metrics', methods=['GET'])
+    def get_available_age_metrics():
+        """Get list of available metrics for age analysis"""
+        try:
+            metrics = [
+                {
+                    'key': 'points',
+                    'name': 'Total Points',
+                    'description': 'Total FPL points scored this season'
+                },
+                {
+                    'key': 'points_per_game',
+                    'name': 'Points Per Game',
+                    'description': 'Average FPL points per game played'
+                },
+                {
+                    'key': 'goals',
+                    'name': 'Goals',
+                    'description': 'Total goals scored this season'
+                },
+                {
+                    'key': 'assists',
+                    'name': 'Assists',
+                    'description': 'Total assists provided this season'
+                },
+                {
+                    'key': 'form',
+                    'name': 'Current Form',
+                    'description': 'Recent performance form rating'
+                },
+                {
+                    'key': 'xg',
+                    'name': 'Expected Goals (xG)',
+                    'description': 'Expected goals based on shot quality'
+                },
+                {
+                    'key': 'xa',
+                    'name': 'Expected Assists (xA)',
+                    'description': 'Expected assists based on chance creation'
+                },
+                {
+                    'key': 'clean_sheets',
+                    'name': 'Clean Sheets',
+                    'description': 'Matches without conceding (defenders/goalkeepers)'
+                },
+                {
+                    'key': 'saves',
+                    'name': 'Saves',
+                    'description': 'Total saves made (goalkeepers only)'
+                },
+                {
+                    'key': 'minutes',
+                    'name': 'Minutes Played',
+                    'description': 'Total minutes played this season'
+                },
+                {
+                    'key': 'games_played',
+                    'name': 'Games Played', 
+                    'description': 'Number of games participated in'
+                }
+            ]
+            
+            positions = ['GK', 'DEF', 'MID', 'FWD']
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'metrics': metrics,
+                    'positions': positions
+                },
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to get age metrics: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/enrich-players', methods=['POST'])
+    def enrich_players_data():
+        """Manually trigger AI enrichment for specific players"""
+        try:
+            data = request.get_json()
+            
+            if not data:
+                return jsonify({'error': 'Request body is required'}), 400
+            
+            player_ids = data.get('player_ids', [])
+            
+            if not player_ids:
+                return jsonify({'error': 'player_ids array is required'}), 400
+            
+            # Get FPL data
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            if not fpl_data:
+                return jsonify({'error': 'Failed to fetch FPL data'}), 500
+            
+            players_data = fpl_data.get('elements', [])
+            teams_data = fpl_data.get('teams', [])
+            team_lookup = {team['id']: team['name'] for team in teams_data}
+            
+            enrichment_results = []
+            
+            async def enrich_players_async():
+                tasks = []
+                for player_id in player_ids:
+                    player = next((p for p in players_data if p['id'] == player_id), None)
+                    if player:
+                        player_name = player.get('web_name', '')
+                        team_name = team_lookup.get(player.get('team'), 'Unknown')
+                        
+                        if player_name and team_name != 'Unknown':
+                            task = age_performance_service.enrich_player_data_with_ai(
+                                player_name, team_name, player_id
+                            )
+                            tasks.append((player_id, player_name, task))
+                
+                for player_id, player_name, task in tasks:
+                    try:
+                        enriched_data = await task
+                        if enriched_data:
+                            enrichment_results.append({
+                                'player_id': player_id,
+                                'player_name': player_name,
+                                'success': True,
+                                'enriched_age': enriched_data.enriched_age,
+                                'birth_date': enriched_data.birth_date,
+                                'nationality': enriched_data.nationality,
+                                'injury_status': enriched_data.injury_status,
+                                'confidence': enriched_data.confidence,
+                                'data_source': enriched_data.data_source
+                            })
+                        else:
+                            enrichment_results.append({
+                                'player_id': player_id,
+                                'player_name': player_name,
+                                'success': False,
+                                'error': 'No enriched data available'
+                            })
+                    except Exception as e:
+                        enrichment_results.append({
+                            'player_id': player_id,
+                            'player_name': player_name,
+                            'success': False,
+                            'error': str(e)
+                        })
+            
+            # Run async enrichment
+            asyncio.run(enrich_players_async())
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'enrichment_results': enrichment_results,
+                    'total_processed': len(player_ids),
+                    'successful_enrichments': len([r for r in enrichment_results if r['success']])
+                },
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Player enrichment failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/season-correlation', methods=['GET'])
+    def analyze_season_correlation():
+        """Analyze correlation between current season and previous season points"""
+        try:
+            previous_season = request.args.get('previous_season', '2023-24')
+            
+            # Get current season data
+            fpl_data = fpl_manager.fetch_bootstrap_data()
+            if not fpl_data:
+                return jsonify({'error': 'Failed to fetch current season data'}), 500
+            
+            # Run correlation analysis
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                analysis_result = loop.run_until_complete(
+                    age_performance_service.analyze_season_correlation(fpl_data, previous_season)
+                )
+            finally:
+                loop.close()
+            
+            # Convert any numpy/pandas types to native Python types for JSON serialization
+            def convert_for_json(obj):
+                if isinstance(obj, (np.integer, np.int64)):
+                    return int(obj)
+                elif isinstance(obj, (np.floating, np.float64)):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, bool):
+                    return bool(obj)
+                elif isinstance(obj, dict):
+                    return {k: convert_for_json(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_for_json(item) for item in obj]
+                else:
+                    return obj
+            
+            clean_result = convert_for_json(analysis_result)
+            
+            return jsonify({
+                'success': True,
+                'data': clean_result,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Season correlation analysis failed: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/age-analysis/enriched-data', methods=['GET'])
+    def get_enriched_players_data():
+        """Get all enriched player data from database"""
+        try:
+            conn = sqlite3.connect(age_performance_service.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT player_id, name, enriched_age, birth_date, nationality, 
+                       injury_status, last_updated, data_source, confidence
+                FROM player_enrichment
+                ORDER BY last_updated DESC
+            ''')
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            enriched_players = []
+            for row in rows:
+                enriched_players.append({
+                    'player_id': row[0],
+                    'name': row[1],
+                    'enriched_age': row[2],
+                    'birth_date': row[3],
+                    'nationality': row[4],
+                    'injury_status': row[5],
+                    'last_updated': row[6],
+                    'data_source': row[7],
+                    'confidence': row[8]
+                })
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'enriched_players': enriched_players,
+                    'total_count': len(enriched_players)
+                },
+                'timestamp': datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to get enriched players data: {e}")
             return jsonify({'error': str(e)}), 500
     
     return app

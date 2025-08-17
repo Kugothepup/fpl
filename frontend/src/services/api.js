@@ -113,6 +113,15 @@ export const apiService = {
     return response.data;
   },
 
+  async getTeamNextGameweeksPredictions(teamId = null, gameweeks = 2) {
+    const params = {
+      ...(teamId && { team_id: teamId }),
+      gameweeks,
+    };
+    const response = await api.get('/predictions/team-next-gameweeks', { params });
+    return response.data;
+  },
+
   // Weather Data
   async getWeather(cities = null) {
     const params = cities ? { cities } : {};
@@ -152,6 +161,101 @@ export const apiService = {
   // Mistral AI optimization
   async optimizeWithMistral(config) {
     const response = await api.post('/wildcard/optimize-mistral', config);
+    return response.data;
+  },
+
+  // Age Performance Analysis
+  async getAgeAnalysis(metric = 'points', position = null, useQuick = true, playerIds = null) {
+    const params = { metric };
+    if (position) params.position = position;
+    if (playerIds && playerIds.length > 0) {
+      params.player_ids = playerIds.join(',');
+    }
+    
+    // Use quick endpoint by default to avoid timeouts
+    const endpoint = useQuick ? '/age-analysis/quick' : '/age-analysis';
+    const response = await api.get(endpoint, { params });
+    return response.data;
+  },
+
+  async getAgeAnalysisWithAI(metric = 'points', position = null, enableEnrichment = false, enableSummary = true) {
+    const params = { 
+      metric,
+      ai_enrichment: enableEnrichment.toString(),
+      ai_summary: enableSummary.toString()
+    };
+    if (position) params.position = position;
+    const response = await api.get('/age-analysis', { params });
+    return response.data;
+  },
+
+  async predictPerformanceByAge(age, metric = 'points', position = null, playerIds = null) {
+    const params = { age, metric };
+    if (position) params.position = position;
+    if (playerIds && playerIds.length > 0) {
+      params.player_ids = playerIds.join(',');
+    }
+    const response = await api.get('/age-analysis/predict', { params });
+    return response.data;
+  },
+
+  async comparePlayersByAge(playerIds, metric = 'points') {
+    const response = await api.post('/age-analysis/compare-players', {
+      player_ids: playerIds,
+      metric
+    });
+    return response.data;
+  },
+
+  async getAgeAnalysisMetrics() {
+    const response = await api.get('/age-analysis/metrics');
+    return response.data;
+  },
+
+  async enrichPlayersData(playerIds) {
+    const response = await api.post('/age-analysis/enrich-players', {
+      player_ids: playerIds
+    });
+    return response.data;
+  },
+
+  async getEnrichedPlayersData() {
+    const response = await api.get('/age-analysis/enriched-data');
+    return response.data;
+  },
+
+  async startBackgroundAIAnalysis(metric = 'points', position = null) {
+    const data = { metric };
+    if (position) data.position = position;
+    const response = await api.post('/age-analysis/background', data);
+    return response.data;
+  },
+
+  async getBackgroundTaskStatus(taskId) {
+    const response = await api.get(`/age-analysis/status/${taskId}`);
+    return response.data;
+  },
+
+  async listBackgroundTasks() {
+    const response = await api.get('/age-analysis/tasks');
+    return response.data;
+  },
+
+  async bulkEnrichPlayerAges(limit = 50, forceRefresh = false) {
+    const data = { limit, force_refresh: forceRefresh };
+    const response = await api.post('/age-analysis/bulk-enrich', data);
+    return response.data;
+  },
+
+  async importPlayerDataFromCSV(season = '2024-25', url = null) {
+    const data = { season };
+    if (url) data.url = url;
+    const response = await api.post('/age-analysis/import-csv', data);
+    return response.data;
+  },
+
+  async getSeasonCorrelationAnalysis() {
+    const response = await api.get('/age-analysis/season-correlation');
     return response.data;
   },
 

@@ -14,6 +14,7 @@ import Predictions from './components/Predictions/Predictions';
 import Reports from './components/Reports/Reports';
 import Wildcard from './components/Wildcard/Wildcard';
 import Accuracy from './components/Accuracy/Accuracy';
+import AgeAnalysis from './components/AgeAnalysis/AgeAnalysis';
 
 // Create dark theme
 const darkTheme = createTheme({
@@ -107,6 +108,7 @@ function App() {
             <Route path="/reports" element={<Reports />} />
             <Route path="/wildcard" element={<Wildcard />} />
             <Route path="/accuracy" element={<Accuracy />} />
+            <Route path="/age-analysis" element={<AgeAnalysis />} />
           </Routes>
         </div>
       </Router>
