@@ -23,6 +23,10 @@ import {
   TableHead,
   TableRow,
   Paper,
+  Button,
+  ButtonGroup,
+  Tabs,
+  Tab,
 } from '@mui/material';
 import { 
   Groups, 
@@ -30,9 +34,13 @@ import {
   ExpandMore, 
   ExpandLess, 
   Person,
-  Schedule
+  Schedule,
+  Timeline,
+  SwapHoriz
 } from '@mui/icons-material';
 import { apiService } from '../../services/api';
+import NextGameweeksPredictions from './NextGameweeksPredictions';
+import TransferRecommendations from './TransferRecommendations';
 
 const MyTeamWidget = () => {
   const [teamData, setTeamData] = useState(null);
@@ -40,6 +48,7 @@ const MyTeamWidget = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(false);
+  const [activeTab, setActiveTab] = useState(0); // 0: Current, 1: Next 2 GWs, 2: Transfers
 
   useEffect(() => {
     loadTeamData();
@@ -84,6 +93,10 @@ const MyTeamWidget = () => {
   const mapElementTypeToPosition = (elementType) => {
     const positionMap = {1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'};
     return positionMap[elementType] || 'Unknown';
+  };
+
+  const handleTabChange = (event, newValue) => {
+    setActiveTab(newValue);
   };
 
   const formatLastUpdated = (dateString) => {
@@ -203,8 +216,9 @@ const MyTeamWidget = () => {
               </Typography>
             </Box>
 
-            {/* Team Players (Expandable) */}
-            <Collapse in={expanded}>
+            {/* Team Players (Expandable) - Only show on Current tab */}
+            {activeTab === 0 && (
+              <Collapse in={expanded}>
               <Divider sx={{ mb: 1 }} />
               <Typography variant="subtitle2" sx={{ mb: 1 }}>
                 Current Squad:
@@ -332,11 +346,65 @@ const MyTeamWidget = () => {
                 </Typography>
               )}
             </Collapse>
+            )}
 
-            {!expanded && teamData.picks && (
+            {/* Show expand hint only on Current tab */}
+            {activeTab === 0 && !expanded && teamData.picks && (
               <Typography variant="caption" color="primary" sx={{ cursor: 'pointer' }}>
                 Click to view {teamData.picks.length} players
               </Typography>
+            )}
+
+            {/* Team Analysis Tabs */}
+            <Divider sx={{ my: 2 }} />
+            <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
+              <Tabs 
+                value={activeTab} 
+                onChange={handleTabChange} 
+                variant="fullWidth"
+                sx={{ 
+                  '& .MuiTab-root': { 
+                    fontSize: '0.75rem', 
+                    minHeight: 36,
+                    textTransform: 'none'
+                  }
+                }}
+              >
+                <Tab 
+                  icon={<Groups sx={{ fontSize: 16 }} />} 
+                  label="Current" 
+                  iconPosition="start"
+                />
+                <Tab 
+                  icon={<Timeline sx={{ fontSize: 16 }} />} 
+                  label="Next 2 GWs" 
+                  iconPosition="start"
+                />
+                <Tab 
+                  icon={<SwapHoriz sx={{ fontSize: 16 }} />} 
+                  label="Transfers" 
+                  iconPosition="start"
+                />
+              </Tabs>
+            </Box>
+
+            {/* Tab Content */}
+            {activeTab === 1 && (
+              <Box>
+                <NextGameweeksPredictions 
+                  teamId={teamData.entry?.id || teamData.id} 
+                  gameweeks={2}
+                />
+              </Box>
+            )}
+
+            {activeTab === 2 && (
+              <Box>
+                <TransferRecommendations 
+                  teamId={teamData.entry?.id || teamData.id}
+                  teamData={teamData}
+                />
+              </Box>
             )}
           </>
         ) : (

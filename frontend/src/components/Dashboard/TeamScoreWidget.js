@@ -70,17 +70,19 @@ const TeamScoreWidget = () => {
           <Alert severity="error" sx={{ fontSize: '0.8rem' }}>
             {error}
           </Alert>
-        ) : teamScore && teamInfo ? (
+        ) : teamScore ? (
           <>
             {/* Team Info */}
             <Box sx={{ mb: 2, p: 2, backgroundColor: '#e8f5e8', borderRadius: 1, border: '1px solid #2e7d32' }}>
               <Typography variant="subtitle2" fontWeight="bold" color="#2e7d32">
-                {teamInfo.name}
+                {teamInfo?.name && teamInfo.name !== 'Unknown Team' ? teamInfo.name : 'My FPL Team'}
               </Typography>
-              <Typography variant="caption" color="#2e7d32" sx={{ fontWeight: 'medium' }}>
-                {teamInfo.player_first_name} {teamInfo.player_last_name}
-              </Typography>
-              {teamInfo.overall_rank && (
+              {teamInfo?.player_first_name && teamInfo?.player_last_name && (
+                <Typography variant="caption" color="#2e7d32" sx={{ fontWeight: 'medium' }}>
+                  {teamInfo.player_first_name} {teamInfo.player_last_name}
+                </Typography>
+              )}
+              {teamInfo?.overall_rank && (
                 <Typography variant="caption" sx={{ ml: 1, color: '#2e7d32', fontWeight: 'medium' }}>
                   • Rank: {teamInfo.overall_rank.toLocaleString()}
                 </Typography>
@@ -110,48 +112,67 @@ const TeamScoreWidget = () => {
               Top Predicted Performers:
             </Typography>
             
-            <Grid container spacing={1}>
-              {teamScore.player_predictions.slice(0, 3).map((player, index) => (
-                <Grid item xs={12} key={player.player_id}>
-                  <Box sx={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: 1, 
-                    p: 0.5,
-                    backgroundColor: getPositionColor(player.position),
-                    borderRadius: 0.5,
-                    border: player.is_captain ? '2px solid gold' : 'none'
-                  }}>
-                    <Avatar sx={{ width: 24, height: 24, fontSize: '0.7rem', bgcolor: 'white', color: getPositionColor(player.position) }}>
-                      {index + 1}
-                    </Avatar>
-                    
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography variant="caption" sx={{ fontWeight: 500, color: 'white' }}>
-                        {player.player_name}
-                        {player.is_captain && <Star sx={{ fontSize: 14, color: 'gold', ml: 0.5 }} />}
-                      </Typography>
-                      <Box sx={{ display: 'flex', gap: 0.5 }}>
-                        <Chip 
-                          label={player.position} 
-                          size="small" 
-                          sx={{ height: 16, fontSize: '0.6rem', bgcolor: 'white', color: getPositionColor(player.position), fontWeight: 'bold' }}
-                        />
-                      </Box>
-                    </Box>
-                    
-                    <Typography variant="caption" fontWeight="bold" color="white">
-                      {player.final_points} pts
-                      {player.is_captain && (
-                        <Typography variant="caption" color="gold" sx={{ ml: 0.5, fontWeight: 'bold' }}>
-                          (C)
-                        </Typography>
-                      )}
+{(() => {
+              const playersWithPoints = teamScore.player_predictions.filter(player => player.final_points > 0);
+              
+              if (playersWithPoints.length === 0) {
+                return (
+                  <Box sx={{ p: 2, textAlign: 'center', backgroundColor: '#fff3e0', borderRadius: 1, border: '1px solid #f57c00' }}>
+                    <Typography variant="body2" color="#f57c00" sx={{ fontWeight: 'medium' }}>
+                      Low prediction confidence for this gameweek. Models may need more recent data.
+                    </Typography>
+                    <Typography variant="caption" color="textSecondary" sx={{ mt: 1, display: 'block' }}>
+                      Your team: {teamScore.player_predictions.filter(p => p.multiplier > 0).length} playing, {teamScore.player_predictions.filter(p => p.multiplier === 0).length} on bench
                     </Typography>
                   </Box>
+                );
+              }
+
+              return (
+                <Grid container spacing={1}>
+                  {playersWithPoints.slice(0, 3).map((player, index) => (
+                    <Grid item xs={12} key={player.player_id}>
+                      <Box sx={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: 1, 
+                        p: 0.5,
+                        backgroundColor: getPositionColor(player.position),
+                        borderRadius: 0.5,
+                        border: player.is_captain ? '2px solid gold' : 'none'
+                      }}>
+                        <Avatar sx={{ width: 24, height: 24, fontSize: '0.7rem', bgcolor: 'white', color: getPositionColor(player.position) }}>
+                          {index + 1}
+                        </Avatar>
+                        
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Typography variant="caption" sx={{ fontWeight: 500, color: 'white' }}>
+                            {player.player_name}
+                            {player.is_captain && <Star sx={{ fontSize: 14, color: 'gold', ml: 0.5 }} />}
+                          </Typography>
+                          <Box sx={{ display: 'flex', gap: 0.5 }}>
+                            <Chip 
+                              label={player.position} 
+                              size="small" 
+                              sx={{ height: 16, fontSize: '0.6rem', bgcolor: 'white', color: getPositionColor(player.position), fontWeight: 'bold' }}
+                            />
+                          </Box>
+                        </Box>
+                        
+                        <Typography variant="caption" fontWeight="bold" color="white">
+                          {player.final_points} pts
+                          {player.is_captain && (
+                            <Typography variant="caption" color="gold" sx={{ ml: 0.5, fontWeight: 'bold' }}>
+                              (C)
+                            </Typography>
+                          )}
+                        </Typography>
+                      </Box>
+                    </Grid>
+                  ))}
                 </Grid>
-              ))}
-            </Grid>
+              );
+            })()}
 
             {/* Current Stats */}
             {teamInfo.total_points && (

@@ -30,6 +30,7 @@ import {
   Settings as SettingsIcon,
   AutoAwesome as WildcardIcon,
   Analytics as AccuracyIcon,
+  TrendingUp as AgeAnalysisIcon,
   Menu as MenuIcon,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
@@ -66,6 +67,7 @@ const Dashboard = () => {
     { label: 'Reports', icon: <ReportsIcon />, path: '/reports' },
     { label: 'Wildcard Helper', icon: <WildcardIcon />, path: '/wildcard' },
     { label: 'Accuracy Tracking', icon: <AccuracyIcon />, path: '/accuracy' },
+    { label: 'Age Analysis', icon: <AgeAnalysisIcon />, path: '/age-analysis' },
   ];
 
   // Load initial data

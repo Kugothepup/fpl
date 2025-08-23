@@ -195,6 +195,13 @@ class FPLManager:
         self.season_started = False
         self.teams_data = {}
         
+        # Import real fixture service for accurate gameweek detection
+        try:
+            from services.fixture_service import real_fixture_service
+            self.real_fixture_service = real_fixture_service
+        except ImportError:
+            self.real_fixture_service = None
+        
         # Weather integration
         self.weather_api_key = Config.OPENWEATHER_API_KEY
         self.weather_base_url = Config.OPENWEATHER_BASE_URL
@@ -218,8 +225,12 @@ class FPLManager:
             
             data = response.json()
             
-            # Update state from bootstrap data
-            if 'events' in data:
+            # Update state from bootstrap data - prefer real fixture service if available
+            if self.real_fixture_service:
+                self.current_gameweek = self.real_fixture_service.get_current_gameweek()
+                self.season_started = True  # 2025-26 season is active
+                logger.info(f"Using real fixture service - Current GW: {self.current_gameweek}")
+            elif 'events' in data:
                 current_event = next((event for event in data['events'] if event['is_current']), None)
                 if current_event:
                     self.current_gameweek = current_event['id']
